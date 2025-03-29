@@ -7,8 +7,15 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+async function main() {
+  const response = await genAI.models.generateContent({
+    model: "gemini-2.0-flash",
+    contents: "Explain how AI works",
+  });
+  console.log(response.text);
+}
 
+await main();
 const EXPENSE_PROMPT = `проаналізуй ці витрати "INPUT_TEXT" і визнач суму та категорію.
 Сума - це число без валюти.
 Категорії: продукти, кафе, покупки, ком послуги, спорт, канцтовари, інші.
