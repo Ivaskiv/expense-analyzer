@@ -23,9 +23,8 @@ async function analyzeExpense(text) {
   try {
     const prompt = EXPENSE_PROMPT.replace('INPUT_TEXT', text);
     const result = await model.generateContent(prompt);
-    const response = result.response.text();
+    const response = result.response.text(); 
 
-    // Більш надійне парсінгування відповіді
     let parts = response.split(',').map(part => part.trim());
 
     if (parts.length < 2) {
@@ -76,15 +75,8 @@ async function analyzeExpense(text) {
 
 async function main() {
   try {
-    const response = await genAI.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: [
-        {
-          content: "Explain how AI works"
-        }
-      ],
-    });
-    console.log(response.text);
+    const result = await model.generateContent("Explain how AI works");
+    console.log(result.response.text());
   } catch (err) {
     console.error('Error during AI generation:', err);
   }
