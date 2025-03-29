@@ -76,16 +76,19 @@ async function analyzeExpense(text) {
 
 async function main() {
   try {
-    const response = await model.generateContent({
+    const response = await genAI.models.generateContent({
       model: "gemini-2.0-flash",
-      contents: "Explain how AI works",
+      contents: [
+        {
+          content: "Explain how AI works"
+        }
+      ],
     });
     console.log(response.text);
   } catch (err) {
     console.error('Error during AI generation:', err);
   }
 }
-
 main();
 
 app.use(express.json({
