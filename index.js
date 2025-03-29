@@ -75,8 +75,10 @@ async function analyzeExpense(text) {
 
 async function main() {
   try {
-    const result = await model.generateContent("Explain how AI works");
-    console.log(result.response.text());
+    const result = await model.generateContent({ 
+      contents: [{ role: "user", parts: [{ text: prompt }] }] 
+  });
+      console.log(result.response.text());
   } catch (err) {
     console.error('Error during AI generation:', err);
   }
