@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-const EXPENSE_PROMPT = `проаналізуй ці витрати "INPUT_TEXT" в форматі"сума, категорія витрат", сума без вказання валюти - тільки число. В якості категорії витрат бери категорії (продукти, кафе, покупки, ком послуги, спорт, інші). Повертай лише суму і категорію, без пояснень`;
+const EXPENSE_PROMPT = `проаналізуй ці витрати "INPUT_TEXT" в форматі"сума, категорія витрат", сума без вказання валюти - тільки число. В якості категорії витрат бери категорії (продукти, кафе, покупки, ком послуги, спорт, канцтовари, інші). Повертай лише суму і категорію, без пояснень`;
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
@@ -64,7 +64,52 @@ bot.on('text', async (ctx) => {
   }
 });
 
-const webhookPath = '/webhook';
+async function analyzeExpense(text) {
+  try {
+    const prompt = EXPENSE_PROMPT.replace('INPUT_TEXT', text);
+    const result = await model.generateContent(prompt);
+    const response = result.response.text();
+    
+    const parts = response.split(',').map(part => part.trim());
+    
+    if (parts.length >= 2) {
+      const amount = parseFloat(parts[0]);
+      const category = parts[1];
+      
+      return {
+        amount: isNaN(amount) ? null : amount,
+        category: category
+      };
+    }
+    
+    return { error: 'Неможливо розпізнати відповідь' };
+  } catch (error) {
+    console.error('Помилка аналізу витрат:', error);
+    return { error: 'Помилка при аналізі витрат' };
+  }
+}
+
+app.post('/webhook', async (req, res) => {
+  try {
+    let data = req.body;
+    
+    if (!data || !data.text) {
+      return res.status(400).json({ error: 'Текст не знайдено у запиті' });
+    }
+    
+    const expenseText = data.text;
+    console.log('Отримано текст для аналізу:', expenseText);
+    
+    const result = await analyzeExpense(expenseText);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Помилка обробки HTTP запиту:', error);
+    res.status(500).json({ error: 'Внутрішня помилка сервера' });
+  }
+});
+
+const webhookPath = '/telegram-webhook';
 
 if (process.env.WEBHOOK_URL) {
   const webhookUrl = process.env.WEBHOOK_URL;
@@ -93,7 +138,7 @@ if (process.env.WEBHOOK_URL) {
   
   bot.telegram.setWebhook(`${webhookUrl}${webhookPath}`)
     .then(() => {
-      console.log(`Вебхук встановлено на ${webhookUrl}${webhookPath}`);
+      console.log(`Telegram вебхук встановлено на ${webhookUrl}${webhookPath}`);
     })
     .catch(err => {
       console.error('Помилка встановлення вебхука:', err);
