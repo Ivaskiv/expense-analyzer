@@ -9,7 +9,11 @@ const PORT = process.env.PORT || 3000;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-const EXPENSE_PROMPT = `проаналізуй ці витрати "INPUT_TEXT" в форматі"сума, категорія витрат", сума без вказання валюти - тільки число. В якості категорії витрат бери категорії (продукти, кафе, покупки, ком послуги, спорт, канцтовари, інші). Повертай лише суму і категорію, без пояснень`;
+const EXPENSE_PROMPT = `проаналізуй ці витрати "INPUT_TEXT" і визнач суму та категорію.
+Сума - це число без валюти.
+Категорії: продукти, кафе, покупки, ком послуги, спорт, канцтовари, інші.
+Якщо текст містить слова про зошити, ручки, олівці, папір - це категорія "канцтовари".
+Поверни лише два значення через кому: суму (тільки число) та категорію. Наприклад: "500, канцтовари"`;
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
@@ -53,11 +57,17 @@ bot.on('text', async (ctx) => {
     
     await ctx.replyWithChatAction('typing');
     
-    const prompt = EXPENSE_PROMPT.replace('INPUT_TEXT', userText);
-    const result = await model.generateContent(prompt);
-    const response = result.response.text();
+    // Use the analyzeExpense function directly instead of calling the AI again
+    const result = await analyzeExpense(userText);
     
-    await ctx.reply(response);
+    if (result.error) {
+      await ctx.reply(`Помилка: ${result.error}`);
+    } else if (result.amount === null) {
+      await ctx.reply('Не вдалося визначити суму витрат. Спробуйте вказати суму чіткіше.');
+    } else {
+      // Format a nice response
+      await ctx.reply(`Записано витрати: ${result.amount} грн, категорія: ${result.category}`);
+    }
   } catch (error) {
     console.error('Помилка:', error);
     await ctx.reply('Виникла помилка при аналізі витрат. Спробуйте ще раз.');
@@ -70,19 +80,52 @@ async function analyzeExpense(text) {
     const result = await model.generateContent(prompt);
     const response = result.response.text();
     
-    const parts = response.split(',').map(part => part.trim());
+    // More robust parsing of the response
+    // First, try to extract by comma
+    let parts = response.split(',').map(part => part.trim());
     
-    if (parts.length >= 2) {
-      const amount = parseFloat(parts[0]);
-      const category = parts[1];
+    // If we don't have two parts, try to extract differently
+    if (parts.length < 2) {
+      // Try to extract first number in the text as amount
+      const amountMatch = response.match(/\d+/);
+      const amount = amountMatch ? parseFloat(amountMatch[0]) : null;
+      
+      // Look for category keywords
+      const categoryMatches = {
+        'продукти': 'продукти',
+        'їжа': 'продукти',
+        'кафе': 'кафе',
+        'ресторан': 'кафе',
+        'покупки': 'покупки',
+        'ком': 'ком послуги',
+        'комунальні': 'ком послуги',
+        'спорт': 'спорт',
+        'канцтовари': 'канцтовари',
+        'зошит': 'канцтовари',
+        'ручк': 'канцтовари',
+        'папір': 'канцтовари'
+      };
+      
+      let category = 'інші';
+      for (const [keyword, cat] of Object.entries(categoryMatches)) {
+        if (response.toLowerCase().includes(keyword.toLowerCase())) {
+          category = cat;
+          break;
+        }
+      }
       
       return {
-        amount: isNaN(amount) ? null : amount,
-        category: category
+        amount,
+        category
       };
     }
+    const amount = parseFloat(parts[0]);
+    const category = parts[1];
     
-    return { error: 'Неможливо розпізнати відповідь' };
+    return {
+      amount: isNaN(amount) ? null : amount,
+      category: category
+    };
   } catch (error) {
     console.error('Помилка аналізу витрат:', error);
     return { error: 'Помилка при аналізі витрат' };
