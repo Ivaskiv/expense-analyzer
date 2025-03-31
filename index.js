@@ -83,6 +83,7 @@ async function analyzeExpense(text) {
 
     if (parts.length < 2) {
       console.log('Неструктурована відповідь від AI:', response);
+      
       const amountMatch = text.match(/\d+/);
       const amount = amountMatch ? parseFloat(amountMatch[0]) : null;
       
@@ -114,6 +115,51 @@ async function analyzeExpense(text) {
   }
 }
 
+// Format the response for the user and forward it to another service
+async function formatAndForwardResponse(result, chatId = null) {
+  try {
+    const now = new Date();
+    const formattedDate = now.toLocaleDateString('uk-UA', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric', 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+    
+    // Create formatted response for display
+    const formattedResponse = 
+      `Data date ${formattedDate}\n` +
+      `amount ${result.amount}\n` +
+      `category ${result.category}\n` +
+      `originalText ${result.originalText}`;
+    
+    // Create data object for forwarding
+    const dataToForward = {
+      date: formattedDate,
+      amount: result.amount,
+      category: result.category,
+      originalText: result.originalText,
+      chatId: chatId
+    };
+    
+    // Forward data to another service if configured
+    if (process.env.FORWARD_URL) {
+      try {
+        await axios.post(process.env.FORWARD_URL, dataToForward);
+        console.log(`Дані успішно відправлено на ${process.env.FORWARD_URL}`);
+      } catch (forwardError) {
+        console.error('Помилка при відправці даних:', forwardError);
+      }
+    }
+    
+    return formattedResponse;
+  } catch (error) {
+    console.error('Помилка при форматуванні відповіді:', error);
+    return `Помилка: ${error.message}`;
+  }
+}
+
 // Set up bot commands
 bot.start((ctx) => ctx.reply('Привіт! Відправте мені текст або голосове повідомлення з інформацією про ваші витрати, і я допоможу їх проаналізувати.'));
 bot.help((ctx) => ctx.reply('Ви можете відправити текст (наприклад: "Купив продукти за 250 грн") або голосове повідомлення з описом витрат.'));
@@ -122,6 +168,7 @@ bot.help((ctx) => ctx.reply('Ви можете відправити текст (
 bot.on('text', async (ctx) => {
   try {
     const text = ctx.message.text;
+    const chatId = ctx.message.chat.id;
     
     // Skip commands
     if (text.startsWith('/')) return;
@@ -134,21 +181,8 @@ bot.on('text', async (ctx) => {
       return ctx.reply(`Помилка: ${result.error}`);
     }
     
-    const now = new Date();
-    const formattedDate = now.toLocaleDateString('uk-UA', { 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric', 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
-    
-    ctx.reply(
-      `Data date ${formattedDate}\n` +
-      `amount ${result.amount}\n` +
-      `category ${result.category}\n` +
-      `originalText ${result.originalText}`
-    );
+    const formattedResponse = await formatAndForwardResponse(result, chatId);
+    ctx.reply(formattedResponse);
   } catch (error) {
     console.error('Помилка при обробці текстового повідомлення:', error);
     ctx.reply('Виникла помилка при обробці вашого повідомлення. Будь ласка, спробуйте пізніше.');
@@ -158,6 +192,7 @@ bot.on('text', async (ctx) => {
 // Handle voice messages
 bot.on('voice', async (ctx) => {
   try {
+    const chatId = ctx.message.chat.id;
     ctx.reply('Отримано голосове повідомлення. Транскрибую та аналізую...');
     
     // Get file information
@@ -194,21 +229,8 @@ bot.on('voice', async (ctx) => {
       return ctx.reply(`Помилка: ${result.error}`);
     }
     
-    const now = new Date();
-    const formattedDate = now.toLocaleDateString('uk-UA', { 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric', 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
-    
-    ctx.reply(
-      `Data date ${formattedDate}\n` +
-      `amount ${result.amount}\n` +
-      `category ${result.category}\n` +
-      `originalText ${result.originalText}`
-    );
+    const formattedResponse = await formatAndForwardResponse(result, chatId);
+    ctx.reply(formattedResponse);
     
     // Clean up the temporary file
     fs.unlinkSync(filePath);
