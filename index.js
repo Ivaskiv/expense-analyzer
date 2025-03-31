@@ -14,13 +14,19 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// For Render deployment, use the provided environment variable for the port
+const PORT = process.env.PORT || 3000;
+
+// Get the base URL for the service from environment variable or construct it
+const BASE_URL = process.env.WEBHOOK_URL || `http://localhost:${PORT}`;
+
+// Create temp directory for files
 const TEMP_DIR = path.join(__dirname, 'temp');
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
@@ -193,126 +199,52 @@ function cleanupFiles(filePaths) {
   });
 }
 
-function saveOrSendAnalysisResult(data) {
-  const resultId = `${data.userId}_${data.messageId}_${Date.now()}`;
-  
-  const formattedResult = {
-    id: resultId,
-    userId: data.userId,
-    timestamp: data.timestamp || new Date().toISOString(),
-    expense: {
-      amount: data.amount,
-      category: data.category,
-      text: data.originalText
-    },
-    metadata: {
-      source: data.audioProcessed ? 'voice_message' : 'text_message',
-      messageId: data.messageId,
-      processed: true
-    }
-  };
-  
-  analysisResults.set(resultId, formattedResult);
-  
-  setTimeout(() => {
-    if (analysisResults.has(resultId)) {
-      analysisResults.delete(resultId);
-      console.log(`Результат ${resultId} видалено зі сховища через таймаут`);
-    }
-  }, 3600000);
-  
-  console.log(`Результат аналізу витрат збережено з ID: ${resultId}`);
-  
-  return resultId;
+// Function to route the data to the router using internal routing for Render
+async function routeToRouter(data) {
+  try {
+    // For Render, we're using internal routing rather than making HTTP requests to ourselves
+    return await processRouterData(data);
+  } catch (error) {
+    console.error('Error routing data to router:', error);
+    throw error;
+  }
 }
 
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-
-bot.start((ctx) => ctx.reply('Привіт! Відправте мені текст або аудіо з інформацією про ваші витрати, і я допоможу їх проаналізувати.'));
-bot.help((ctx) => ctx.reply('Просто відправте мені текстове повідомлення або голосове повідомлення з описом витрат, наприклад: "Купив продукти за 250 грн"'));
-
-bot.on('text', async (ctx) => {
+// Function to process router data directly (without HTTP call)
+async function processRouterData(data) {
   try {
-    const text = ctx.message.text;
+    console.log('Router received data:', data);
     
-    if (text.startsWith('/')) return;
-    
-    ctx.reply('Аналізую ваші витрати...');
-    
-    const result = await analyzeExpense(text);
-    
-    if (result.error) {
-      return ctx.reply(`Помилка: ${result.error}`);
+    if (data.type === 'TEXT') {
+      // Process text messages
+      return await processWebhookData({ text: data.content });
+    } else if (data.type === 'AUDIO') {
+      // Process audio messages
+      // First convert and transcribe
+      const wavPath = await convertOggToWav(data.filePath);
+      const transcribedText = await transcribeAudio(wavPath);
+      
+      // Process the transcribed text
+      const result = await processWebhookData({ text: transcribedText });
+      
+      // Cleanup files
+      cleanupFiles([data.filePath, wavPath]);
+      
+      return result;
+    } else {
+      throw new Error('Unknown data type');
     }
-    
-    const resultId = saveOrSendAnalysisResult({
-      userId: ctx.message.from.id,
-      messageId: ctx.message.message_id,
-      amount: result.amount,
-      category: result.category,
-      originalText: result.originalText
-    });
-    
-    ctx.reply(`✅ Витрати успішно проаналізовано та збережено\nID результату: ${resultId}`);
   } catch (error) {
-    console.error('Помилка при обробці повідомлення:', error);
-    ctx.reply('Виникла помилка при обробці вашого повідомлення. Будь ласка, спробуйте пізніше.');
+    console.error('Error in router processing:', error);
+    throw error;
   }
-});
+}
 
-bot.on(['voice', 'audio'], async (ctx) => {
+// Function to process webhook data directly (without HTTP call)
+async function processWebhookData(data) {
   try {
-    const fileId = ctx.message.voice ? ctx.message.voice.file_id : ctx.message.audio.file_id;
-    
-    ctx.reply('Отримую аудіо повідомлення...');
-    
-    const oggPath = await downloadAudioFile(fileId);
-    ctx.reply('Конвертую аудіо...');
-    
-    const wavPath = await convertOggToWav(oggPath);
-    ctx.reply('Транскрибую аудіо...');
-    
-    const transcribedText = await transcribeAudio(wavPath);
-    ctx.reply(`Розпізнаний текст: "${transcribedText}"`);
-    
-    ctx.reply('Аналізую витрати з аудіо...');
-    const result = await analyzeExpense(transcribedText);
-    
-    cleanupFiles([oggPath, wavPath]);
-    
-    if (result.error) {
-      return ctx.reply(`Помилка: ${result.error}`);
-    }
-    
-    const resultId = saveOrSendAnalysisResult({
-      userId: ctx.message.from.id,
-      messageId: ctx.message.message_id,
-      amount: result.amount,
-      category: result.category,
-      originalText: transcribedText,
-      audioProcessed: true
-    });
-    
-    ctx.reply(`✅ Аудіо-повідомлення про витрати успішно проаналізовано та збережено\nID результату: ${resultId}`);
-  } catch (error) {
-    console.error('Помилка при обробці аудіо повідомлення:', error);
-    ctx.reply('Виникла помилка при обробці аудіо повідомлення. Будь ласка, спробуйте пізніше.');
-  }
-});
-
-app.use(express.json({
-  verify: (req, res, buf, encoding) => {
-    req.rawBody = buf.toString(encoding || 'utf8');
-  },
-  strict: false  
-}));
-
-app.post('/webhook', async (req, res) => {
-  try {
-    let data = req.body;
-
     if (!data || !data.text) {
-      return res.status(400).json({ error: 'Текст не знайдено у запиті' });
+      throw new Error('Текст не знайдено у запиті');
     }
 
     const expenseText = data.text;
@@ -321,13 +253,99 @@ app.post('/webhook', async (req, res) => {
     const result = await analyzeExpense(expenseText);
     
     const now = new Date();
-    res.json({
+    return {
       date: now.toISOString(),
       amount: result.amount,
       category: result.category,
       originalText: result.originalText,
       error: result.error
-    });
+    };
+  } catch (error) {
+    console.error('Помилка обробки даних:', error);
+    throw error;
+  }
+}
+
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+
+bot.start((ctx) => ctx.reply('Привіт! Відправте мені текст або аудіо з інформацією про ваші витрати, і я передам це в систему.'));
+bot.help((ctx) => ctx.reply('Просто відправте мені текстове повідомлення або голосове повідомлення з описом витрат, наприклад: "Купив продукти за 250 грн"'));
+
+bot.on('text', async (ctx) => {
+  try {
+    const text = ctx.message.text;
+    
+    if (text.startsWith('/')) return;
+    
+    // Instead of analyzing and replying, route the text data
+    const data = {
+      type: 'TEXT',
+      content: text,
+      userId: ctx.message.from.id,
+      messageId: ctx.message.message_id,
+      timestamp: new Date().toISOString()
+    };
+    
+    // Route the data to the router component
+    await routeToRouter(data);
+    
+    // No response back to the user from here
+  } catch (error) {
+    console.error('Помилка при обробці повідомлення:', error);
+    // No error response back to the user
+  }
+});
+
+bot.on(['voice', 'audio'], async (ctx) => {
+  try {
+    const fileId = ctx.message.voice ? ctx.message.voice.file_id : ctx.message.audio.file_id;
+    
+    // Download the audio file
+    const oggPath = await downloadAudioFile(fileId);
+    
+    // Route the audio data to the router component
+    const data = {
+      type: 'AUDIO',
+      filePath: oggPath,
+      userId: ctx.message.from.id,
+      messageId: ctx.message.message_id,
+      timestamp: new Date().toISOString()
+    };
+    
+    // Route the data to the router component
+    await routeToRouter(data);
+    
+    // No response back to the user from here
+  } catch (error) {
+    console.error('Помилка при обробці аудіо повідомлення:', error);
+    // No error response back to the user
+  }
+});
+
+// Setup Express middleware
+app.use(express.json({
+  verify: (req, res, buf, encoding) => {
+    req.rawBody = buf.toString(encoding || 'utf8');
+  },
+  strict: false  
+}));
+
+// Router endpoint - still keep HTTP endpoint for external systems
+app.post('/router', async (req, res) => {
+  try {
+    const result = await processRouterData(req.body);
+    res.json(result);
+  } catch (error) {
+    console.error('Error in router processing:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Webhook endpoint for HTTP requests - keep for API compatibility
+app.post('/webhook', async (req, res) => {
+  try {
+    const result = await processWebhookData(req.body);
+    res.json(result);
   } catch (error) {
     console.error('Помилка обробки HTTP запиту:', error);
     res.status(500).json({ error: 'Внутрішня помилка сервера' });
@@ -357,8 +375,14 @@ app.get('/', (req, res) => {
   res.send('Бот працює!');
 });
 
+// Health check endpoint for Render
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
 const webhookPath = '/telegram-webhook';
 
+// Telegram webhook setup
 if (process.env.WEBHOOK_URL) {
   const webhookUrl = process.env.WEBHOOK_URL;
 
@@ -407,6 +431,7 @@ const server = app.listen(PORT, () => {
   console.log(`Сервер працює на порту ${PORT}`);
 });
 
+// Handle graceful shutdown for Render
 process.once('SIGINT', () => {
   server.close(() => {
     console.log('Сервер зупинено (SIGINT)');
