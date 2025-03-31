@@ -2,8 +2,17 @@ import dotenv from 'dotenv';
 import { Telegraf } from 'telegraf';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import express from 'express';
+import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { exec } from 'child_process';
+import util from 'util';
 
 dotenv.config();
+
+// Make exec promise-based
+const execPromise = util.promisify(exec);
 
 // Initialize Express server
 const app = express();
@@ -13,15 +22,55 @@ const PORT = process.env.PORT || 3000;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-// Define the prompt for expense analysis
+// Define the prompt for expense analysis with dynamic categories
 const EXPENSE_PROMPT = `проаналізуй ці витрати "INPUT_TEXT" і визнач суму та категорію.
 Сума - це число без валюти.
-Категорії: продукти, кафе, покупки, ком послуги, спорт, канцтовари, інші.
-Якщо текст містить слова про зошити, ручки, олівці, папір - це категорія "канцтовари".
+Визнач найбільш підходящу категорію для цих витрат. Основні категорії: продукти, кафе, покупки, ком послуги, спорт, канцтовари, інші.
 Поверни лише два значення через кому: суму (тільки число) та категорію. Наприклад: "500, канцтовари"`;
 
 // Initialize Telegram bot
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+
+// Get current directory
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Create temp directory if it doesn't exist
+const tempDir = path.join(__dirname, 'temp');
+if (!fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir);
+}
+
+// Function to transcribe audio using Whisper locally
+async function transcribeAudio(filePath) {
+  try {
+    // Convert .oga to .wav (since Whisper works better with WAV)
+    const wavFilePath = filePath.replace('.ogg', '.wav');
+    await execPromise(`ffmpeg -i ${filePath} ${wavFilePath}`);
+
+    // Run Whisper (using local installation) with Ukrainian language
+    const { stdout } = await execPromise(`whisper ${wavFilePath} --language uk --model tiny`);
+    
+    // The output file will be the input file name with .txt extension
+    const txtFilePath = wavFilePath.replace('.wav', '.txt');
+    const transcription = fs.readFileSync(txtFilePath, 'utf8');
+    
+    // Clean up temporary files
+    fs.unlinkSync(wavFilePath);
+    fs.unlinkSync(txtFilePath);
+    
+    return transcription;
+  } catch (error) {
+    console.error('Помилка при транскрибуванні аудіо:', error);
+    
+    // Return a friendly error if Whisper is not installed
+    if (error.message.includes('whisper: command not found')) {
+      throw new Error('Whisper не встановлено. Будь ласка, встановіть Whisper для транскрипції аудіо.');
+    }
+    
+    throw error;
+  }
+}
 
 // Function to analyze expense text using AI
 async function analyzeExpense(text) {
@@ -33,31 +82,16 @@ async function analyzeExpense(text) {
     let parts = response.split(',').map(part => part.trim());
 
     if (parts.length < 2) {
-      const amountMatch = response.match(/\d+/);
+      console.log('Неструктурована відповідь від AI:', response);
+      const amountMatch = text.match(/\d+/);
       const amount = amountMatch ? parseFloat(amountMatch[0]) : null;
-
-      const categoryMatches = {
-        'продукти': 'продукти',
-        'їжа': 'продукти',
-        'кафе': 'кафе',
-        'ресторан': 'кафе',
-        'покупки': 'покупки',
-        'ком': 'ком послуги',
-        'комунальні': 'ком послуги',
-        'спорт': 'спорт',
-        'канцтовари': 'канцтовари',
-        'зошит': 'канцтовари',
-        'ручк': 'канцтовари',
-        'папір': 'канцтовари'
-      };
-
-      let category = 'інші';
-      for (const [keyword, cat] of Object.entries(categoryMatches)) {
-        if (response.toLowerCase().includes(keyword.toLowerCase())) {
-          category = cat;
-          break;
-        }
-      }
+      
+      const categoryPrompt = `З тексту "${text}" визнач лише категорію витрат. 
+      Основні категорії: продукти, кафе, покупки, ком послуги, спорт, канцтовари, інші.
+      Поверни тільки назву категорії.`;
+      
+      const categoryResult = await model.generateContent(categoryPrompt);
+      const category = categoryResult.response.text().trim();
 
       return {
         amount,
@@ -81,8 +115,8 @@ async function analyzeExpense(text) {
 }
 
 // Set up bot commands
-bot.start((ctx) => ctx.reply('Привіт! Відправте мені інформацію про ваші витрати, і я допоможу їх проаналізувати.'));
-bot.help((ctx) => ctx.reply('Просто відправте мені повідомлення з описом витрат, наприклад: "Купив продукти за 250 грн"'));
+bot.start((ctx) => ctx.reply('Привіт! Відправте мені текст або голосове повідомлення з інформацією про ваші витрати, і я допоможу їх проаналізувати.'));
+bot.help((ctx) => ctx.reply('Ви можете відправити текст (наприклад: "Купив продукти за 250 грн") або голосове повідомлення з описом витрат.'));
 
 // Handle text messages
 bot.on('text', async (ctx) => {
@@ -100,10 +134,87 @@ bot.on('text', async (ctx) => {
       return ctx.reply(`Помилка: ${result.error}`);
     }
     
-    ctx.reply(`✅ Витрати проаналізовано:\nСума: ${result.amount}\nКатегорія: ${result.category}`);
+    const now = new Date();
+    const formattedDate = now.toLocaleDateString('uk-UA', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric', 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+    
+    ctx.reply(
+      `Data date ${formattedDate}\n` +
+      `amount ${result.amount}\n` +
+      `category ${result.category}\n` +
+      `originalText ${result.originalText}`
+    );
   } catch (error) {
-    console.error('Помилка при обробці повідомлення:', error);
+    console.error('Помилка при обробці текстового повідомлення:', error);
     ctx.reply('Виникла помилка при обробці вашого повідомлення. Будь ласка, спробуйте пізніше.');
+  }
+});
+
+// Handle voice messages
+bot.on('voice', async (ctx) => {
+  try {
+    ctx.reply('Отримано голосове повідомлення. Транскрибую та аналізую...');
+    
+    // Get file information
+    const fileId = ctx.message.voice.file_id;
+    const fileInfo = await ctx.telegram.getFile(fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${fileInfo.file_path}`;
+    
+    // Download voice file
+    const response = await axios({
+      method: 'GET',
+      url: fileUrl,
+      responseType: 'stream'
+    });
+    
+    const filePath = path.join(tempDir, `${fileId}.ogg`);
+    const writer = fs.createWriteStream(filePath);
+    
+    response.data.pipe(writer);
+    
+    // Wait for the file to be saved
+    await new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+    });
+    
+    // Transcribe audio
+    const transcription = await transcribeAudio(filePath);
+    ctx.reply(`Транскрипція: "${transcription}"`);
+    
+    // Analyze expense
+    const result = await analyzeExpense(transcription);
+    
+    if (result.error) {
+      return ctx.reply(`Помилка: ${result.error}`);
+    }
+    
+    const now = new Date();
+    const formattedDate = now.toLocaleDateString('uk-UA', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric', 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+    
+    ctx.reply(
+      `Data date ${formattedDate}\n` +
+      `amount ${result.amount}\n` +
+      `category ${result.category}\n` +
+      `originalText ${result.originalText}`
+    );
+    
+    // Clean up the temporary file
+    fs.unlinkSync(filePath);
+  } catch (error) {
+    console.error('Помилка при обробці голосового повідомлення:', error);
+    ctx.reply('Виникла помилка при обробці вашого голосового повідомлення. Будь ласка, спробуйте ще раз.');
   }
 });
 
@@ -129,10 +240,18 @@ app.post('/webhook', async (req, res) => {
 
     const result = await analyzeExpense(expenseText);
     
-    // Return the result in a format convenient for further processing
+    // Return the result in the requested format
     const now = new Date();
+    const formattedDate = now.toLocaleDateString('uk-UA', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric', 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+    
     res.json({
-      date: now.toISOString(),
+      date: formattedDate,
       amount: result.amount,
       category: result.category,
       originalText: result.originalText,
