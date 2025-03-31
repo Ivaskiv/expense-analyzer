@@ -19,15 +19,12 @@ if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
 
-// Initialize Express server
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Initialize Google AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-// Define the improved prompt for expense analysis
 const EXPENSE_PROMPT = `Проаналізуй витрати: "INPUT_TEXT"
 Визнач суму (тільки число без валюти) та категорію витрат.
 Категорії витрат:
@@ -45,14 +42,14 @@ const EXPENSE_PROMPT = `Проаналізуй витрати: "INPUT_TEXT"
 Формат відповіді: сума, категорія
 Приклад: "500, канцтовари"`;
 
-// Function to analyze expense text using AI
+const analysisResults = new Map();
+
 async function analyzeExpense(text) {
   try {
     const prompt = EXPENSE_PROMPT.replace('INPUT_TEXT', text);
     const result = await model.generateContent(prompt);
     const response = result.response.text().trim();
 
-    // Use a better regex to extract amount and category
     const parseRegex = /(\d+(?:\.\d+)?)\s*,\s*([а-яіїєґА-ЯІЇЄҐ\s]+)/;
     const match = response.match(parseRegex);
     
@@ -64,7 +61,6 @@ async function analyzeExpense(text) {
       };
     }
     
-    // If standard format failed, attempt to extract with enhanced AI prompt
     return await fallbackCategoryDetection(text);
   } catch (error) {
     console.error('Помилка аналізу витрат:', error);
@@ -72,7 +68,6 @@ async function analyzeExpense(text) {
   }
 }
 
-// Fallback method for when direct parsing fails
 async function fallbackCategoryDetection(text) {
   try {
     const enhancedPrompt = `Текст про витрати: "${text}"
@@ -91,7 +86,6 @@ async function fallbackCategoryDetection(text) {
     const response = result.response.text();
     
     try {
-      // Try to parse as JSON
       const parsedResponse = JSON.parse(response);
       if (parsedResponse.amount !== undefined && parsedResponse.category) {
         return {
@@ -101,7 +95,6 @@ async function fallbackCategoryDetection(text) {
         };
       }
     } catch (jsonError) {
-      // If JSON parsing fails, try to extract values using regex
       const amountMatch = response.match(/amount["\s:]+(\d+(?:\.\d+)?)/i);
       const categoryMatch = response.match(/category["\s:]+["']?([а-яіїєґА-ЯІЇЄҐ\s]+)["']?/i);
       
@@ -114,7 +107,6 @@ async function fallbackCategoryDetection(text) {
       }
     }
     
-    // Extract any numbers and use default category as last resort
     const numberMatch = text.match(/\d+(?:\.\d+)?/);
     return {
       amount: numberMatch ? parseFloat(numberMatch[0]) : null,
@@ -127,7 +119,6 @@ async function fallbackCategoryDetection(text) {
   }
 }
 
-// Function to download audio file from Telegram
 async function downloadAudioFile(fileId) {
   try {
     const fileInfo = await bot.telegram.getFile(fileId);
@@ -155,7 +146,6 @@ async function downloadAudioFile(fileId) {
   }
 }
 
-// Function to convert OGG to WAV
 function convertOggToWav(oggPath) {
   return new Promise((resolve, reject) => {
     const wavPath = oggPath.replace('.ogg', '.wav');
@@ -170,7 +160,6 @@ function convertOggToWav(oggPath) {
   });
 }
 
-// Function to transcribe audio using Whisper
 function transcribeAudio(audioPath) {
   return new Promise((resolve, reject) => {
     exec(`whisper ${audioPath} --model tiny --language uk --output_format txt`, (error, stdout, stderr) => {
@@ -191,7 +180,6 @@ function transcribeAudio(audioPath) {
   });
 }
 
-// Clean up temporary files
 function cleanupFiles(filePaths) {
   filePaths.forEach(filePath => {
     if (fs.existsSync(filePath)) {
@@ -205,19 +193,48 @@ function cleanupFiles(filePaths) {
   });
 }
 
-// Initialize Telegram bot
+function saveOrSendAnalysisResult(data) {
+  const resultId = `${data.userId}_${data.messageId}_${Date.now()}`;
+  
+  const formattedResult = {
+    id: resultId,
+    userId: data.userId,
+    timestamp: data.timestamp || new Date().toISOString(),
+    expense: {
+      amount: data.amount,
+      category: data.category,
+      text: data.originalText
+    },
+    metadata: {
+      source: data.audioProcessed ? 'voice_message' : 'text_message',
+      messageId: data.messageId,
+      processed: true
+    }
+  };
+  
+  analysisResults.set(resultId, formattedResult);
+  
+  setTimeout(() => {
+    if (analysisResults.has(resultId)) {
+      analysisResults.delete(resultId);
+      console.log(`Результат ${resultId} видалено зі сховища через таймаут`);
+    }
+  }, 3600000);
+  
+  console.log(`Результат аналізу витрат збережено з ID: ${resultId}`);
+  
+  return resultId;
+}
+
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// Set up bot commands
 bot.start((ctx) => ctx.reply('Привіт! Відправте мені текст або аудіо з інформацією про ваші витрати, і я допоможу їх проаналізувати.'));
 bot.help((ctx) => ctx.reply('Просто відправте мені текстове повідомлення або голосове повідомлення з описом витрат, наприклад: "Купив продукти за 250 грн"'));
 
-// Handle text messages
 bot.on('text', async (ctx) => {
   try {
     const text = ctx.message.text;
     
-    // Skip commands
     if (text.startsWith('/')) return;
     
     ctx.reply('Аналізую ваші витрати...');
@@ -228,14 +245,21 @@ bot.on('text', async (ctx) => {
       return ctx.reply(`Помилка: ${result.error}`);
     }
     
-    ctx.reply(`✅ Витрати проаналізовано:\nСума: ${result.amount}\nКатегорія: ${result.category}`);
+    const resultId = saveOrSendAnalysisResult({
+      userId: ctx.message.from.id,
+      messageId: ctx.message.message_id,
+      amount: result.amount,
+      category: result.category,
+      originalText: result.originalText
+    });
+    
+    ctx.reply(`✅ Витрати успішно проаналізовано та збережено\nID результату: ${resultId}`);
   } catch (error) {
     console.error('Помилка при обробці повідомлення:', error);
     ctx.reply('Виникла помилка при обробці вашого повідомлення. Будь ласка, спробуйте пізніше.');
   }
 });
 
-// Handle voice/audio messages
 bot.on(['voice', 'audio'], async (ctx) => {
   try {
     const fileId = ctx.message.voice ? ctx.message.voice.file_id : ctx.message.audio.file_id;
@@ -260,14 +284,22 @@ bot.on(['voice', 'audio'], async (ctx) => {
       return ctx.reply(`Помилка: ${result.error}`);
     }
     
-    ctx.reply(`✅ Витрати проаналізовано:\nСума: ${result.amount}\nКатегорія: ${result.category}`);
+    const resultId = saveOrSendAnalysisResult({
+      userId: ctx.message.from.id,
+      messageId: ctx.message.message_id,
+      amount: result.amount,
+      category: result.category,
+      originalText: transcribedText,
+      audioProcessed: true
+    });
+    
+    ctx.reply(`✅ Аудіо-повідомлення про витрати успішно проаналізовано та збережено\nID результату: ${resultId}`);
   } catch (error) {
     console.error('Помилка при обробці аудіо повідомлення:', error);
     ctx.reply('Виникла помилка при обробці аудіо повідомлення. Будь ласка, спробуйте пізніше.');
   }
 });
 
-// Setup Express middleware
 app.use(express.json({
   verify: (req, res, buf, encoding) => {
     req.rawBody = buf.toString(encoding || 'utf8');
@@ -275,7 +307,6 @@ app.use(express.json({
   strict: false  
 }));
 
-// Webhook route for expense analysis
 app.post('/webhook', async (req, res) => {
   try {
     let data = req.body;
@@ -303,12 +334,29 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Health check route
+app.get('/api/analysis/:resultId', (req, res) => {
+  const { resultId } = req.params;
+  
+  if (analysisResults.has(resultId)) {
+    res.json(analysisResults.get(resultId));
+  } else {
+    res.status(404).json({ error: 'Результат аналізу не знайдено' });
+  }
+});
+
+app.get('/api/analysis/user/:userId', (req, res) => {
+  const { userId } = req.params;
+  
+  const userResults = Array.from(analysisResults.values())
+    .filter(result => result.userId === parseInt(userId));
+  
+  res.json(userResults);
+});
+
 app.get('/', (req, res) => {
   res.send('Бот працює!');
 });
 
-// Telegram webhook configuration
 const webhookPath = '/telegram-webhook';
 
 if (process.env.WEBHOOK_URL) {
@@ -355,12 +403,10 @@ if (process.env.WEBHOOK_URL) {
     });
 }
 
-// Start the server
 const server = app.listen(PORT, () => {
   console.log(`Сервер працює на порту ${PORT}`);
 });
 
-// Graceful shutdown
 process.once('SIGINT', () => {
   server.close(() => {
     console.log('Сервер зупинено (SIGINT)');
