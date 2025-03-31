@@ -152,6 +152,29 @@ async function downloadAudioFile(fileId) {
   }
 }
 
+// Modified to use Google's Speech-to-Text API instead of Whisper
+async function transcribeAudioWithGemini(audioPath) {
+  try {
+    // Read audio file as base64
+    const audioBuffer = fs.readFileSync(audioPath);
+    const base64Audio = audioBuffer.toString('base64');
+    
+    // Construct prompt for Gemini
+    const prompt = "Transcribe the following audio. It is in Ukrainian language. Return only the transcribed text without any additional comments.";
+    
+    // Use Gemini model with audio input
+    const result = await genAI.generateContent([
+      prompt,
+      { inlineData: { data: base64Audio, mimeType: "audio/wav" } }
+    ]);
+    
+    return result.response.text().trim();
+  } catch (error) {
+    console.error('Помилка транскрибування аудіо через Gemini:', error);
+    return "Не вдалося розпізнати аудіо";
+  }
+}
+
 function convertOggToWav(oggPath) {
   return new Promise((resolve, reject) => {
     const wavPath = oggPath.replace('.ogg', '.wav');
@@ -166,35 +189,24 @@ function convertOggToWav(oggPath) {
   });
 }
 
-function transcribeAudio(audioPath) {
-  return new Promise((resolve, reject) => {
-    exec(`whisper ${audioPath} --model tiny --language uk --output_format txt`, (error, stdout, stderr) => {
-      if (error) {
-        console.error('Помилка транскрибування аудіо:', error);
-        return reject(error);
-      }
-      
-      const textFilePath = audioPath.replace('.wav', '.txt');
-      
-      if (fs.existsSync(textFilePath)) {
-        const transcribedText = fs.readFileSync(textFilePath, 'utf8').trim();
-        resolve(transcribedText);
-      } else {
-        reject(new Error('Файл транскрипції не створено'));
-      }
-    });
-  });
-}
-
 function cleanupFiles(filePaths) {
   filePaths.forEach(filePath => {
     if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+      try {
+        fs.unlinkSync(filePath);
+      } catch (err) {
+        console.error(`Помилка при видаленні файлу ${filePath}:`, err);
+      }
     }
     
+    // Check for additional related files
     const textFilePath = filePath.replace('.wav', '.txt');
     if (fs.existsSync(textFilePath)) {
-      fs.unlinkSync(textFilePath);
+      try {
+        fs.unlinkSync(textFilePath);
+      } catch (err) {
+        console.error(`Помилка при видаленні файлу ${textFilePath}:`, err);
+      }
     }
   });
 }
@@ -220,17 +232,24 @@ async function processRouterData(data) {
       return await processWebhookData({ text: data.content });
     } else if (data.type === 'AUDIO') {
       // Process audio messages
-      // First convert and transcribe
-      const wavPath = await convertOggToWav(data.filePath);
-      const transcribedText = await transcribeAudio(wavPath);
-      
-      // Process the transcribed text
-      const result = await processWebhookData({ text: transcribedText });
-      
-      // Cleanup files
-      cleanupFiles([data.filePath, wavPath]);
-      
-      return result;
+      try {
+        // First convert and transcribe
+        const wavPath = await convertOggToWav(data.filePath);
+        // Use Gemini for transcription instead of Whisper
+        const transcribedText = await transcribeAudioWithGemini(wavPath);
+        
+        // Process the transcribed text
+        const result = await processWebhookData({ text: transcribedText });
+        
+        // Cleanup files
+        cleanupFiles([data.filePath, wavPath]);
+        
+        return result;
+      } catch (audioError) {
+        console.error('Error processing audio:', audioError);
+        cleanupFiles([data.filePath]);
+        return { error: 'Помилка при обробці аудіо', originalText: 'Audio processing failed' };
+      }
     } else {
       throw new Error('Unknown data type');
     }
@@ -267,6 +286,7 @@ async function processWebhookData(data) {
 }
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+let botRunning = false;
 
 bot.start((ctx) => ctx.reply('Привіт! Відправте мені текст або аудіо з інформацією про ваші витрати, і я передам це в систему.'));
 bot.help((ctx) => ctx.reply('Просто відправте мені текстове повідомлення або голосове повідомлення з описом витрат, наприклад: "Купив продукти за 250 грн"'));
@@ -287,44 +307,66 @@ bot.on('text', async (ctx) => {
     };
     
     // Route the data to the router component
-    await routeToRouter(data);
+    const result = await routeToRouter(data);
     
-    // No response back to the user from here
+    // Reply to user with the result
+    await ctx.reply(`Витрати успішно записані:\n${result.amount} грн - ${result.category}`);
+    
   } catch (error) {
     console.error('Помилка при обробці повідомлення:', error);
-    // No error response back to the user
+    await ctx.reply('Виникла помилка при обробці вашого повідомлення. Спробуйте ще раз.');
   }
 });
 
 bot.on(['voice', 'audio'], async (ctx) => {
   try {
+    await ctx.reply('Отримано аудіо, обробляю...');
+    
     const fileId = ctx.message.voice ? ctx.message.voice.file_id : ctx.message.audio.file_id;
     
     // Download the audio file
     const oggPath = await downloadAudioFile(fileId);
     
-    // Convert and transcribe immediately
-    const wavPath = await convertOggToWav(oggPath);
-    const transcribedText = await transcribeAudio(wavPath);
-    
-    // Create a TEXT type data object instead of AUDIO
-    const data = {
-      type: 'TEXT',
-      content: transcribedText, 
-      userId: ctx.message.from.id,
-      messageId: ctx.message.message_id,
-      timestamp: new Date().toISOString()
-    };
-    
-    // Route the data to the router component
-    await routeToRouter(data);
-    
-    // Clean up temporary files
-    cleanupFiles([oggPath, wavPath]);
-    
+    try {
+      // Convert OGG to WAV
+      const wavPath = await convertOggToWav(oggPath);
+      
+      // Use Gemini for transcription instead of Whisper
+      const transcribedText = await transcribeAudioWithGemini(wavPath);
+      
+      if (!transcribedText || transcribedText === "Не вдалося розпізнати аудіо") {
+        await ctx.reply('Не вдалося розпізнати аудіо. Спробуйте, будь ласка, відправити текстове повідомлення.');
+        cleanupFiles([oggPath, wavPath]);
+        return;
+      }
+      
+      // Create a data object with the transcribed text
+      const data = {
+        type: 'TEXT',
+        content: transcribedText, 
+        userId: ctx.message.from.id,
+        messageId: ctx.message.message_id,
+        timestamp: new Date().toISOString()
+      };
+      
+      // Route the data to the router component
+      const result = await routeToRouter(data);
+      
+      // Reply to the user with the result
+      await ctx.reply(`Текст: "${transcribedText}"\n\nВитрати успішно записані:\n${result.amount} грн - ${result.category}`);
+      
+      // Clean up temporary files
+      cleanupFiles([oggPath, wavPath]);
+    } catch (audioError) {
+      console.error('Помилка при обробці аудіо:', audioError);
+      await ctx.reply('Виникла помилка при обробці аудіо. Спробуйте відправити текстове повідомлення.');
+      
+      // Make sure to cleanup even on error
+      if (oggPath) cleanupFiles([oggPath]);
+    }
   } catch (error) {
     console.error('Помилка при обробці аудіо повідомлення:', error);
-    // No error response back to the user
+    await ctx.reply('Виникла помилка при обробці вашого аудіо. Спробуйте ще раз або відправте текстове повідомлення.');
   }
 });
 
@@ -417,6 +459,7 @@ if (process.env.WEBHOOK_URL) {
   bot.telegram.setWebhook(`${webhookUrl}${webhookPath}`)
     .then(() => {
       console.log(`Telegram вебхук встановлено на ${webhookUrl}${webhookPath}`);
+      botRunning = true;
     })
     .catch(err => {
       console.error('Помилка встановлення вебхука:', err);
@@ -427,6 +470,7 @@ if (process.env.WEBHOOK_URL) {
   bot.launch()
     .then(() => {
       console.log('Бот запущено в режимі polling!');
+      botRunning = true;
     })
     .catch(err => {
       console.error('Помилка запуску бота:', err);
@@ -441,13 +485,25 @@ const server = app.listen(PORT, () => {
 process.once('SIGINT', () => {
   server.close(() => {
     console.log('Сервер зупинено (SIGINT)');
-    if (bot.botInfo) bot.stop('SIGINT');
+    if (botRunning) {
+      try {
+        bot.stop('SIGINT');
+      } catch (err) {
+        console.log('Бот вже зупинено або не був запущений');
+      }
+    }
   });
 });
 
 process.once('SIGTERM', () => {
   server.close(() => {
     console.log('Сервер зупинено (SIGTERM)');
-    if (bot.botInfo) bot.stop('SIGTERM');
+    if (botRunning) {
+      try {
+        bot.stop('SIGTERM');
+      } catch (err) {
+        console.log('Бот вже зупинено або не був запущений');
+      }
+    }
   });
 });
