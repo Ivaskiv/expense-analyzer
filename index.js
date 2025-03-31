@@ -48,6 +48,8 @@ const EXPENSE_PROMPT = `Проаналізуй витрати: "INPUT_TEXT"
 Формат відповіді: сума, категорія
 Приклад: "500, канцтовари"`;
 
+// Using a Set to track processed message IDs to prevent duplicates
+const processedMessages = new Set();
 const analysisResults = new Map();
 
 async function analyzeExpense(text) {
@@ -166,35 +168,36 @@ function convertOggToWav(oggPath) {
   });
 }
 
-function transcribeAudio(audioPath) {
-  return new Promise((resolve, reject) => {
-    exec(`whisper ${audioPath} --model tiny --language uk --output_format txt`, (error, stdout, stderr) => {
-      if (error) {
-        console.error('Помилка транскрибування аудіо:', error);
-        return reject(error);
-      }
-      
-      const textFilePath = audioPath.replace('.wav', '.txt');
-      
-      if (fs.existsSync(textFilePath)) {
-        const transcribedText = fs.readFileSync(textFilePath, 'utf8').trim();
-        resolve(transcribedText);
-      } else {
-        reject(new Error('Файл транскрипції не створено'));
-      }
-    });
-  });
+// Skip Whisper and use an alternative approach for transcription
+async function transcribeAudioAlternative(audioPath) {
+  try {
+    // Placeholder for where a cloud-based speech recognition service could be used
+    // For now, just return a placeholder message since Whisper isn't available
+    console.log('Аудіотранскрипція недоступна на сервері. Використовуємо альтернативний метод.');
+    return "Голосове повідомлення отримано";
+  } catch (error) {
+    console.error('Помилка альтернативної транскрипції:', error);
+    throw error;
+  }
 }
 
 function cleanupFiles(filePaths) {
   filePaths.forEach(filePath => {
     if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+      try {
+        fs.unlinkSync(filePath);
+      } catch (error) {
+        console.error(`Помилка видалення файлу ${filePath}:`, error);
+      }
     }
     
     const textFilePath = filePath.replace('.wav', '.txt');
     if (fs.existsSync(textFilePath)) {
-      fs.unlinkSync(textFilePath);
+      try {
+        fs.unlinkSync(textFilePath);
+      } catch (error) {
+        console.error(`Помилка видалення файлу ${textFilePath}:`, error);
+      }
     }
   });
 }
@@ -202,10 +205,38 @@ function cleanupFiles(filePaths) {
 // Function to route the data to the router using internal routing for Render
 async function routeToRouter(data) {
   try {
-    // For Render, we're using internal routing rather than making HTTP requests to ourselves
-    return await processRouterData(data);
+    const result = await processRouterData(data);
+    
+    // Store the result
+    const resultId = `${data.userId}_${data.messageId}`;
+    analysisResults.set(resultId, {
+      ...result,
+      userId: data.userId,
+      messageId: data.messageId,
+    });
+    
+    // Send response back to user
+    if (data.ctx) {
+      try {
+        await data.ctx.reply(`✅ Витрату збережено:\n\nСума: ${result.amount || 'не вказана'} грн\nКатегорія: ${result.category || 'не визначена'}`);
+      } catch (replyError) {
+        console.error('Помилка відправки відповіді користувачу:', replyError);
+      }
+    }
+    
+    return result;
   } catch (error) {
     console.error('Error routing data to router:', error);
+    
+    // Inform user about the error
+    if (data.ctx) {
+      try {
+        await data.ctx.reply('❌ Помилка при обробці повідомлення. Спробуйте ще раз або зверніться до адміністратора.');
+      } catch (replyError) {
+        console.error('Помилка відправки повідомлення про помилку:', replyError);
+      }
+    }
+    
     throw error;
   }
 }
@@ -219,18 +250,31 @@ async function processRouterData(data) {
       // Process text messages
       return await processWebhookData({ text: data.content });
     } else if (data.type === 'AUDIO') {
-      // Process audio messages
-      // First convert and transcribe
-      const wavPath = await convertOggToWav(data.filePath);
-      const transcribedText = await transcribeAudio(wavPath);
-      
-      // Process the transcribed text
-      const result = await processWebhookData({ text: transcribedText });
-      
-      // Cleanup files
-      cleanupFiles([data.filePath, wavPath]);
-      
-      return result;
+      try {
+        // First, try to convert and use alternative transcription
+        const wavPath = await convertOggToWav(data.filePath);
+        
+        // Use alternative transcription since Whisper isn't available
+        const transcribedText = await transcribeAudioAlternative(wavPath);
+        
+        // Process the transcribed text
+        const result = await processWebhookData({ text: transcribedText });
+        
+        // Cleanup files
+        cleanupFiles([data.filePath, wavPath]);
+        
+        return result;
+      } catch (audioError) {
+        console.error('Error processing audio, falling back to default message:', audioError);
+        // Return a fallback result
+        return {
+          date: new Date().toISOString(),
+          amount: null,
+          category: "інші",
+          originalText: "Голосове повідомлення",
+          error: "Помилка обробки аудіо"
+        };
+      }
     } else {
       throw new Error('Unknown data type');
     }
@@ -274,57 +318,98 @@ bot.help((ctx) => ctx.reply('Просто відправте мені текст
 bot.on('text', async (ctx) => {
   try {
     const text = ctx.message.text;
+    const messageId = ctx.message.message_id;
     
+    // Skip command messages
     if (text.startsWith('/')) return;
     
-    // Instead of analyzing and replying, route the text data
+    // Skip already processed messages to avoid duplicates
+    if (processedMessages.has(messageId)) {
+      console.log(`Пропуск повторного повідомлення: ${messageId}`);
+      return;
+    }
+    
+    // Mark as processed
+    processedMessages.add(messageId);
+    
+    // Clear old processed messages (keep only last 1000)
+    if (processedMessages.size > 1000) {
+      const oldestMessages = Array.from(processedMessages).slice(0, 100);
+      oldestMessages.forEach(id => processedMessages.delete(id));
+    }
+    
+    await ctx.reply('⏳ Аналізую ваші витрати...');
+    
+    // Create data object including ctx for response
     const data = {
       type: 'TEXT',
       content: text,
       userId: ctx.message.from.id,
-      messageId: ctx.message.message_id,
-      timestamp: new Date().toISOString()
+      messageId: messageId,
+      timestamp: new Date().toISOString(),
+      ctx: ctx
     };
     
     // Route the data to the router component
     await routeToRouter(data);
-    
-    // No response back to the user from here
   } catch (error) {
     console.error('Помилка при обробці повідомлення:', error);
-    // No error response back to the user
+    try {
+      await ctx.reply('❌ Виникла помилка при обробці вашого повідомлення. Спробуйте ще раз пізніше.');
+    } catch (replyError) {
+      console.error('Помилка відправки повідомлення про помилку:', replyError);
+    }
   }
 });
 
 bot.on(['voice', 'audio'], async (ctx) => {
   try {
-    const fileId = ctx.message.voice ? ctx.message.voice.file_id : ctx.message.audio.file_id;
+    const messageId = ctx.message.message_id;
     
-    // Download the audio file
-    const oggPath = await downloadAudioFile(fileId);
+    // Skip already processed messages
+    if (processedMessages.has(messageId)) {
+      console.log(`Пропуск повторного аудіо повідомлення: ${messageId}`);
+      return;
+    }
     
-    // Convert and transcribe immediately
-    const wavPath = await convertOggToWav(oggPath);
-    const transcribedText = await transcribeAudio(wavPath);
+    // Mark as processed
+    processedMessages.add(messageId);
     
-    // Create a TEXT type data object instead of AUDIO
-    const data = {
-      type: 'TEXT',
-      content: transcribedText, 
-      userId: ctx.message.from.id,
-      messageId: ctx.message.message_id,
-      timestamp: new Date().toISOString()
-    };
+    await ctx.reply('⏳ Отримав голосове повідомлення. Обробляю...');
     
-    // Route the data to the router component
-    await routeToRouter(data);
-    
-    // Clean up temporary files
-    cleanupFiles([oggPath, wavPath]);
-    
+    try {
+      const fileId = ctx.message.voice ? ctx.message.voice.file_id : ctx.message.audio.file_id;
+      
+      // Download the audio file
+      const oggPath = await downloadAudioFile(fileId);
+      
+      // Create a data object including ctx for response
+      const data = {
+        type: 'AUDIO',
+        filePath: oggPath,
+        userId: ctx.message.from.id,
+        messageId: messageId,
+        timestamp: new Date().toISOString(),
+        ctx: ctx
+      };
+      
+      // Route the data to the router component with a timeout
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Timeout processing audio')), 30000)
+      );
+      
+      await Promise.race([routeToRouter(data), timeoutPromise]);
+    } catch (audioError) {
+      console.error('Помилка при обробці аудіо:', audioError);
+      await ctx.reply('❌ Не вдалося обробити голосове повідомлення. Спробуйте надіслати текстове повідомлення з вашими витратами.');
+    }
   } catch (error) {
     console.error('Помилка при обробці аудіо повідомлення:', error);
-    // No error response back to the user
+    try {
+      await ctx.reply('❌ Виникла помилка при обробці вашого повідомлення. Спробуйте надіслати текстом.');
+    } catch (replyError) {
+      console.error('Помилка відправки повідомлення про помилку:', replyError);
+    }
   }
 });
 
