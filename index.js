@@ -303,10 +303,14 @@ bot.on(['voice', 'audio'], async (ctx) => {
     // Download the audio file
     const oggPath = await downloadAudioFile(fileId);
     
-    // Route the audio data to the router component
+    // Convert and transcribe immediately
+    const wavPath = await convertOggToWav(oggPath);
+    const transcribedText = await transcribeAudio(wavPath);
+    
+    // Create a TEXT type data object instead of AUDIO
     const data = {
-      type: 'AUDIO',
-      filePath: oggPath,
+      type: 'TEXT',
+      content: transcribedText, 
       userId: ctx.message.from.id,
       messageId: ctx.message.message_id,
       timestamp: new Date().toISOString()
@@ -315,7 +319,9 @@ bot.on(['voice', 'audio'], async (ctx) => {
     // Route the data to the router component
     await routeToRouter(data);
     
-    // No response back to the user from here
+    // Clean up temporary files
+    cleanupFiles([oggPath, wavPath]);
+    
   } catch (error) {
     console.error('Помилка при обробці аудіо повідомлення:', error);
     // No error response back to the user
