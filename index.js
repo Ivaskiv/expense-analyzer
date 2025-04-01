@@ -17,8 +17,8 @@ const __dirname = dirname(__filename);
 // For Render deployment, use the provided environment variable for the port
 const PORT = process.env.PORT || 3000;
 
-// Get the base URL for the service from environment variable or construct it
-const BASE_URL = process.env.WEBHOOK_URL || `http://localhost:${PORT}`;
+// Get the base URL for the service from environment variable
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 // Create temp directory for files
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -152,25 +152,30 @@ async function downloadAudioFile(fileId) {
   }
 }
 
-// Modified to use Google's Speech-to-Text API instead of Whisper
-async function transcribeAudioWithGemini(audioPath) {
+// Changed to use Whisper for transcription
+async function transcribeAudioWithWhisper(audioPath) {
   try {
-    // Read audio file as base64
-    const audioBuffer = fs.readFileSync(audioPath);
-    const base64Audio = audioBuffer.toString('base64');
-    
-    // Construct prompt for Gemini
-    const prompt = "Transcribe the following audio. It is in Ukrainian language. Return only the transcribed text without any additional comments.";
-    
-    // Use Gemini model with audio input
-    const result = await genAI.generateContent([
-      prompt,
-      { inlineData: { data: base64Audio, mimeType: "audio/wav" } }
-    ]);
-    
-    return result.response.text().trim();
+    // Using child_process to call Whisper CLI
+    return new Promise((resolve, reject) => {
+      const outputPath = audioPath.replace('.wav', '.txt');
+      
+      // For Render: Make sure Whisper is installed and available in the PATH
+      exec(`whisper ${audioPath} --model small --language uk --output_format txt --output_dir ${TEMP_DIR}`, (error) => {
+        if (error) {
+          console.error('Whisper transcription error:', error);
+          return reject(error);
+        }
+        
+        try {
+          const transcribedText = fs.readFileSync(outputPath, 'utf8');
+          resolve(transcribedText.trim());
+        } catch (readError) {
+          reject(readError);
+        }
+      });
+    });
   } catch (error) {
-    console.error('Помилка транскрибування аудіо через Gemini:', error);
+    console.error('Помилка транскрибування аудіо через Whisper:', error);
     return "Не вдалося розпізнати аудіо";
   }
 }
@@ -179,6 +184,7 @@ function convertOggToWav(oggPath) {
   return new Promise((resolve, reject) => {
     const wavPath = oggPath.replace('.ogg', '.wav');
     
+    // For Render: Make sure ffmpeg is installed
     exec(`ffmpeg -i ${oggPath} -ar 16000 -ac 1 -c:a pcm_s16le ${wavPath}`, (error) => {
       if (error) {
         console.error('Помилка конвертації аудіо:', error);
@@ -214,7 +220,7 @@ function cleanupFiles(filePaths) {
 // Function to route the data to the router using internal routing for Render
 async function routeToRouter(data) {
   try {
-    // For Render, we're using internal routing rather than making HTTP requests to ourselves
+    // For Render, we're using internal routing rather than making HTTP requests
     return await processRouterData(data);
   } catch (error) {
     console.error('Error routing data to router:', error);
@@ -222,7 +228,7 @@ async function routeToRouter(data) {
   }
 }
 
-// Function to process router data directly (without HTTP call)
+// Function to process router data directly
 async function processRouterData(data) {
   try {
     console.log('Router received data:', data);
@@ -235,8 +241,8 @@ async function processRouterData(data) {
       try {
         // First convert and transcribe
         const wavPath = await convertOggToWav(data.filePath);
-        // Use Gemini for transcription instead of Whisper
-        const transcribedText = await transcribeAudioWithGemini(wavPath);
+        // Use Whisper for transcription
+        const transcribedText = await transcribeAudioWithWhisper(wavPath);
         
         // Process the transcribed text
         const result = await processWebhookData({ text: transcribedText });
@@ -259,7 +265,7 @@ async function processRouterData(data) {
   }
 }
 
-// Function to process webhook data directly (without HTTP call)
+// Function to process webhook data
 async function processWebhookData(data) {
   try {
     if (!data || !data.text) {
@@ -288,16 +294,26 @@ async function processWebhookData(data) {
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 let botRunning = false;
 
-bot.start((ctx) => ctx.reply('Привіт! Відправте мені текст або аудіо з інформацією про ваші витрати, і я передам це в систему.'));
-bot.help((ctx) => ctx.reply('Просто відправте мені текстове повідомлення або голосове повідомлення з описом витрат, наприклад: "Купив продукти за 250 грн"'));
+// Setup Express middleware before bot handlers
+app.use(express.json({
+  verify: (req, res, buf, encoding) => {
+    req.rawBody = buf.toString(encoding || 'utf8');
+  },
+  strict: false  
+}));
 
+// Minimal handlers - no responses needed
+bot.start((ctx) => {});
+bot.help((ctx) => {});
+
+// Optimized text handler - no response messages to user
 bot.on('text', async (ctx) => {
   try {
     const text = ctx.message.text;
     
     if (text.startsWith('/')) return;
     
-    // Instead of analyzing and replying, route the text data
+    // Silent processing without reply
     const data = {
       type: 'TEXT',
       content: text,
@@ -306,79 +322,45 @@ bot.on('text', async (ctx) => {
       timestamp: new Date().toISOString()
     };
     
-    // Route the data to the router component
-    const result = await routeToRouter(data);
-    
-    // Reply to user with the result
-    await ctx.reply(`Витрати успішно записані:\n${result.amount} грн - ${result.category}`);
+    await routeToRouter(data);
     
   } catch (error) {
     console.error('Помилка при обробці повідомлення:', error);
-    await ctx.reply('Виникла помилка при обробці вашого повідомлення. Спробуйте ще раз.');
   }
 });
 
+// Optimized voice/audio handler - no response messages to user
 bot.on(['voice', 'audio'], async (ctx) => {
   try {
-    await ctx.reply('Отримано аудіо, обробляю...');
-    
     const fileId = ctx.message.voice ? ctx.message.voice.file_id : ctx.message.audio.file_id;
     
     // Download the audio file
     const oggPath = await downloadAudioFile(fileId);
     
     try {
-      // Convert OGG to WAV
-      const wavPath = await convertOggToWav(oggPath);
-      
-      // Use Gemini for transcription instead of Whisper
-      const transcribedText = await transcribeAudioWithGemini(wavPath);
-      
-      if (!transcribedText || transcribedText === "Не вдалося розпізнати аудіо") {
-        await ctx.reply('Не вдалося розпізнати аудіо. Спробуйте, будь ласка, відправити текстове повідомлення.');
-        cleanupFiles([oggPath, wavPath]);
-        return;
-      }
-      
-      // Create a data object with the transcribed text
+      // Silent processing without reply
       const data = {
-        type: 'TEXT',
-        content: transcribedText, 
+        type: 'AUDIO',
+        filePath: oggPath,
         userId: ctx.message.from.id,
         messageId: ctx.message.message_id,
         timestamp: new Date().toISOString()
       };
       
-      // Route the data to the router component
-      const result = await routeToRouter(data);
+      await routeToRouter(data);
       
-      // Reply to the user with the result
-      await ctx.reply(`Текст: "${transcribedText}"\n\nВитрати успішно записані:\n${result.amount} грн - ${result.category}`);
-      
-      // Clean up temporary files
-      cleanupFiles([oggPath, wavPath]);
     } catch (audioError) {
       console.error('Помилка при обробці аудіо:', audioError);
-      await ctx.reply('Виникла помилка при обробці аудіо. Спробуйте відправити текстове повідомлення.');
       
-      // Make sure to cleanup even on error
+      // Cleanup on error
       if (oggPath) cleanupFiles([oggPath]);
     }
   } catch (error) {
     console.error('Помилка при обробці аудіо повідомлення:', error);
-    await ctx.reply('Виникла помилка при обробці вашого аудіо. Спробуйте ще раз або відправте текстове повідомлення.');
   }
 });
 
-// Setup Express middleware
-app.use(express.json({
-  verify: (req, res, buf, encoding) => {
-    req.rawBody = buf.toString(encoding || 'utf8');
-  },
-  strict: false  
-}));
-
-// Router endpoint - still keep HTTP endpoint for external systems
+// Router endpoint for API compatibility
 app.post('/router', async (req, res) => {
   try {
     const result = await processRouterData(req.body);
@@ -389,7 +371,7 @@ app.post('/router', async (req, res) => {
   }
 });
 
-// Webhook endpoint for HTTP requests - keep for API compatibility
+// Webhook endpoint for HTTP requests
 app.post('/webhook', async (req, res) => {
   try {
     const result = await processWebhookData(req.body);
@@ -400,6 +382,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// API endpoints
 app.get('/api/analysis/:resultId', (req, res) => {
   const { resultId } = req.params;
   
@@ -419,6 +402,7 @@ app.get('/api/analysis/user/:userId', (req, res) => {
   res.json(userResults);
 });
 
+// Root endpoint
 app.get('/', (req, res) => {
   res.send('Бот працює!');
 });
@@ -428,57 +412,60 @@ app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
+// Telegram webhook path
 const webhookPath = '/telegram-webhook';
 
-// Telegram webhook setup
-if (process.env.WEBHOOK_URL) {
-  const webhookUrl = process.env.WEBHOOK_URL;
-
-  app.post(webhookPath, (req, res) => {
-    try {
-      if (req.body) {
-        bot.handleUpdate(req.body, res);
-      } else if (req.rawBody) {
-        try {
-          const update = JSON.parse(req.rawBody);
-          bot.handleUpdate(update, res);
-        } catch (e) {
-          console.error('Помилка парсингу тіла вебхука:', e);
-          res.status(400).send('Невалідний JSON');
-        }
-      } else {
-        console.error('Порожнє тіло запиту');
-        res.status(400).send('Порожнє тіло запиту');
-      }
-    } catch (error) {
-      console.error('Помилка при обробці вебхука:', error);
-      res.status(500).send('Внутрішня помилка сервера');
-    }
-  });
-
-  bot.telegram.setWebhook(`${webhookUrl}${webhookPath}`)
-    .then(() => {
-      console.log(`Telegram вебхук встановлено на ${webhookUrl}${webhookPath}`);
-      botRunning = true;
-    })
-    .catch(err => {
-      console.error('Помилка встановлення вебхука:', err);
-    });
-
-  console.log(`Бот працює в режимі вебхука на ${webhookUrl}${webhookPath}`);
-} else {
-  bot.launch()
-    .then(() => {
-      console.log('Бот запущено в режимі polling!');
-      botRunning = true;
-    })
-    .catch(err => {
-      console.error('Помилка запуску бота:', err);
-    });
-}
-
+// Start the server first
 const server = app.listen(PORT, () => {
   console.log(`Сервер працює на порту ${PORT}`);
+  
+  // After server is started, setup the bot
+  if (WEBHOOK_URL) {
+    // Setup webhook for Telegram bot
+    bot.telegram.setWebhook(`${WEBHOOK_URL}${webhookPath}`)
+      .then(() => {
+        console.log(`Telegram вебхук встановлено на ${WEBHOOK_URL}${webhookPath}`);
+        botRunning = true;
+      })
+      .catch(err => {
+        console.error('Помилка встановлення вебхука:', err);
+      });
+      
+    // Define webhook endpoint for Telegram
+    app.post(webhookPath, (req, res) => {
+      try {
+        if (req.body) {
+          bot.handleUpdate(req.body, res);
+        } else if (req.rawBody) {
+          try {
+            const update = JSON.parse(req.rawBody);
+            bot.handleUpdate(update, res);
+          } catch (e) {
+            console.error('Помилка парсингу тіла вебхука:', e);
+            res.status(400).send('Невалідний JSON');
+          }
+        } else {
+          console.error('Порожнє тіло запиту');
+          res.status(400).send('Порожнє тіло запиту');
+        }
+      } catch (error) {
+        console.error('Помилка при обробці вебхука:', error);
+        res.status(500).send('Внутрішня помилка сервера');
+      }
+    });
+    
+    console.log(`Бот працює в режимі вебхука на ${WEBHOOK_URL}${webhookPath}`);
+  } else {
+    // Use polling method if webhook URL is not provided
+    bot.launch()
+      .then(() => {
+        console.log('Бот запущено в режимі polling!');
+        botRunning = true;
+      })
+      .catch(err => {
+        console.error('Помилка запуску бота:', err);
+      });
+  }
 });
 
 // Handle graceful shutdown for Render
