@@ -4,7 +4,6 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
 import axios from 'axios';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -189,105 +188,6 @@ async function downloadAudioFile(fileId) {
 }
 
 /**
- * Convert OGG audio to WAV format using ffmpeg
- * @param {string} oggPath - Path to OGG file
- * @returns {string} Path to WAV file
- */
-function convertOggToWav(oggPath) {
-  return new Promise((resolve, reject) => {
-    const wavPath = oggPath.replace('.ogg', '.wav');
-    
-    exec(`ffmpeg -i ${oggPath} -ar 16000 -ac 1 -c:a pcm_s16le ${wavPath}`, (error) => {
-      if (error) {
-        console.error('Помилка конвертації аудіо:', error);
-        return reject(error);
-      }
-      resolve(wavPath);
-    });
-  });
-}
-
-/**
- * Transcribe audio using Whisper
- * @param {string} audioPath - Шлях до аудіо файлу
- * @returns {string} Транскрибований текст
- */
-async function transcribeAudioWithWhisper(audioPath) {
-  try {
-    const outputPath = audioPath.replace('.wav', '.txt');
-    const modelPath = path.join(__dirname, 'models', 'whisper-medium-uk');
-    
-    return new Promise((resolve, reject) => {
-      // Використовуємо medium модель для кращої якості з україномовними фразами
-      // Додаємо спеціальні параметри для української мови
-      exec(`whisper ${audioPath} --model medium --language uk --initial_prompt "Це аудіозапис українською про фінансові витрати" --output_format txt --output_dir ${TEMP_DIR} --task transcribe --beam_size 5 --best_of 5`, (error) => {
-        if (error) {
-          console.error('Помилка транскрипції Whisper:', error);
-          return reject(error);
-        }
-        
-        try {
-          if (fs.existsSync(outputPath)) {
-            let transcribedText = fs.readFileSync(outputPath, 'utf8').trim();
-            
-            // Постобробка для покращення розпізнавання сум і фінансової термінології
-            transcribedText = improveFinancialTextRecognition(transcribedText);
-            
-            resolve(transcribedText);
-          } else {
-            // Перевіряємо альтернативний шлях виводу на основі конвенцій іменування Whisper
-            const baseName = path.basename(audioPath, path.extname(audioPath));
-            const alternativeOutputPath = path.join(TEMP_DIR, `${baseName}.txt`);
-            
-            if (fs.existsSync(alternativeOutputPath)) {
-              let transcribedText = fs.readFileSync(alternativeOutputPath, 'utf8').trim();
-              
-              // Постобробка для покращення розпізнавання сум і фінансової термінології
-              transcribedText = improveFinancialTextRecognition(transcribedText);
-              
-              resolve(transcribedText);
-            } else {
-              reject(new Error('Файл транскрипції не знайдено'));
-            }
-          }
-        } catch (readError) {
-          reject(readError);
-        }
-      });
-    });
-  } catch (error) {
-    console.error('Помилка транскрибування аудіо через Whisper:', error);
-    return "Не вдалося розпізнати аудіо";
-  }
-}
-
-/**
- * Покращення розпізнавання фінансових термінів у транскрибованому тексті
- * @param {string} text - Транскрибований текст
- * @returns {string} Покращений текст
- */
-function improveFinancialTextRecognition(text) {
-  // Виправлення типових помилок розпізнавання чисел
-  let improved = text
-    // Нормалізація чисел зі словами
-    .replace(/(\d+)\s*(грн|гривень|грн\.|гривні)/gi, '$1 грн')
-    .replace(/(\d+)\s*(грн|гривень|грн\.|гривні)(\s*\d+)/gi, '$1.$3 грн')
-    // Виправлення для категорій витрат
-    .replace(/продукт(и|ів|ам)/gi, 'продукти')
-    .replace(/комунальн(і|их|им)/gi, 'ком послуги')
-    .replace(/в магазин(і|у|ах)/gi, 'продукти')
-    // Виправлення для сум з комою та крапкою
-    .replace(/(\d+)[,\.](\d+)/g, (match, p1, p2) => `${p1}.${p2}`);
-  
-  // Пошук і нормалізація сум грошей
-  const moneyPattern = /(\d+)\s*(?:гривень|грн|грн\.|гривні|грошей|гр\.)/gi;
-  improved = improved.replace(moneyPattern, (match, amount) => `${amount} грн`);
-  
-  // Видалення зайвих пробілів
-  improved = improved.replace(/\s+/g, ' ').trim();
-  
-  return improved;
-}/**
  * Clean up temporary files
  * @param {Array<string>} filePaths - Paths to files to delete
  */
@@ -325,36 +225,14 @@ async function processRouterData(data) {
       // Process text messages
       return await processWebhookData({ text: data.content, userId: data.userId });
     } else if (data.type === 'AUDIO') {
-      // Process audio messages
-      try {
-        // First convert and transcribe
-        const wavPath = await convertOggToWav(data.filePath);
-        // Use Whisper for transcription
-        const transcribedText = await transcribeAudioWithWhisper(wavPath);
-        
-        console.log('Transcribed text:', transcribedText);
-        
-        // Process the transcribed text
-        const result = await processWebhookData({ 
-          text: transcribedText, 
-          userId: data.userId,
-          source: 'audio' 
-        });
-        
-        // Cleanup files
-        cleanupFiles([data.filePath]);
-        
-        return result;
-      } catch (audioError) {
-        console.error('Error processing audio:', audioError);
-        cleanupFiles([data.filePath]);
-        return { 
-          error: 'Помилка при обробці аудіо', 
-          originalText: 'Audio processing failed',
-          amount: null,
-          category: 'інші'
-        };
-      }
+      // For audio messages, simply return a default response without transcription
+      // This ensures we acknowledge the audio but don't process it
+      return { 
+        error: 'Аудіо повідомлення не підтримуються', 
+        originalText: 'Audio message not supported',
+        amount: null,
+        category: 'інші'
+      };
     } else {
       throw new Error('Unknown data type');
     }
@@ -414,15 +292,14 @@ let botRunning = false;
 
 // Bot handlers
 bot.start((ctx) => {
-  ctx.reply('Привіт! Я бот для аналізу витрат. Просто надішли мені текст або аудіо з описом твоїх витрат, і я проаналізую їх.');
+  ctx.reply('Привіт! Я бот для аналізу витрат. Просто надішли мені текст з описом твоїх витрат, і я проаналізую їх.');
 });
 
 bot.help((ctx) => {
   ctx.reply(`
 Як користуватися ботом:
 1. Відправ мені текстове повідомлення з описом витрат, наприклад: "Купив хліб за 35 грн".
-2. Або запиши голосове повідомлення з описом витрат.
-3. Я проаналізую твої витрати і додам їх до твоєї таблиці.
+2. Я проаналізую твої витрати і додам їх до твоєї таблиці.
 
 Підтримувані категорії витрат:
 - продукти
@@ -472,45 +349,7 @@ bot.on('text', async (ctx) => {
 
 // Voice/audio handler
 bot.on(['voice', 'audio'], async (ctx) => {
-  try {
-    ctx.reply('🎤 Отримано аудіо, обробляю...');
-    
-    const fileId = ctx.message.voice ? ctx.message.voice.file_id : ctx.message.audio.file_id;
-    
-    // Download the audio file
-    const oggPath = await downloadAudioFile(fileId);
-    
-    try {
-      // Process audio message
-      const data = {
-        type: 'AUDIO',
-        filePath: oggPath,
-        userId: ctx.message.from.id,
-        messageId: ctx.message.message_id,
-        timestamp: new Date().toISOString()
-      };
-      
-      // Process the data without waiting for completion
-      routeToRouter(data)
-        .then(() => {
-          ctx.reply('✅ Аудіо успішно оброблено');
-        })
-        .catch(error => {
-          console.error('Помилка обробки аудіо повідомлення:', error);
-          ctx.reply('❌ Виникла помилка при обробці аудіо');
-        });
-      
-    } catch (audioError) {
-      console.error('Помилка при обробці аудіо:', audioError);
-      ctx.reply('❌ Виникла помилка при обробці аудіо');
-      
-      // Cleanup on error
-      if (oggPath) cleanupFiles([oggPath]);
-    }
-  } catch (error) {
-    console.error('Помилка при обробці аудіо повідомлення:', error);
-    ctx.reply('❌ Виникла помилка при обробці аудіо повідомлення');
-  }
+  ctx.reply('⚠️ Аудіо повідомлення наразі не підтримуються. Будь ласка, відправте опис витрат текстом.');
 });
 
 /**
