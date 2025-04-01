@@ -495,5 +495,3 @@ process.once('SIGTERM', () => {
   });
 });
 
-// Start the server
-startServer();
