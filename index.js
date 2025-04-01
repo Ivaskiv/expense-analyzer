@@ -8,6 +8,8 @@ import axios from 'axios';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
+import { spawn } from 'child_process';
+
 dotenv.config();
 
 // Basic setup and initialization
@@ -16,6 +18,7 @@ const __dirname = dirname(__filename);
 const PORT = process.env.PORT || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const TEMP_DIR = path.join(__dirname, 'temp');
+const COQUI_MODEL_PATH = process.env.COQUI_MODEL_PATH || path.join(__dirname, 'models/ukrainian');
 
 // Create temp directory if it doesn't exist
 if (!fs.existsSync(TEMP_DIR)) {
@@ -188,6 +191,70 @@ async function downloadAudioFile(fileId) {
 }
 
 /**
+ * Transcribe audio using Coqui STT
+ * @param {string} filePath - Path to audio file
+ * @returns {Promise<string>} Transcribed text
+ */
+async function transcribeAudio(filePath) {
+  try {
+    // Step 1: Convert audio to correct format using ffmpeg
+    const wavFilePath = `${filePath}.wav`;
+    
+    await new Promise((resolve, reject) => {
+      // Convert to 16kHz mono WAV as required by Coqui STT
+      const ffmpeg = spawn('ffmpeg', [
+        '-i', filePath,
+        '-ar', '16000',
+        '-ac', '1',
+        '-f', 'wav',
+        wavFilePath
+      ]);
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`ffmpeg process exited with code ${code}`));
+        }
+      });
+      
+      ffmpeg.stderr.on('data', (data) => {
+        console.log(`ffmpeg: ${data}`);
+      });
+    });
+    
+    // Step 2: Run Coqui STT on the converted audio
+    return new Promise((resolve, reject) => {
+      const coqui = spawn('stt', [
+        '--model', COQUI_MODEL_PATH,
+        '--audio', wavFilePath
+      ]);
+      
+      let transcribedText = '';
+      
+      coqui.stdout.on('data', (data) => {
+        transcribedText += data.toString();
+      });
+      
+      coqui.on('close', (code) => {
+        if (code === 0) {
+          resolve(transcribedText.trim());
+        } else {
+          reject(new Error(`Coqui STT process exited with code ${code}`));
+        }
+      });
+      
+      coqui.stderr.on('data', (data) => {
+        console.error(`Coqui STT error: ${data}`);
+      });
+    });
+  } catch (error) {
+    console.error('Помилка при транскрибації аудіо:', error);
+    throw error;
+  }
+}
+
+/**
  * Clean up temporary files
  * @param {Array<string>} filePaths - Paths to files to delete
  */
@@ -213,6 +280,60 @@ function cleanupFiles(filePaths) {
 }
 
 /**
+ * Process expense text
+ * @param {string} text - Text to process
+ * @param {number} userId - User ID
+ * @param {Object} ctx - Telegram context
+ * @returns {Promise<void>}
+ */
+async function processExpense(text, userId, ctx) {
+  try {
+    if (!text || text.trim().length === 0) {
+      await ctx.reply('❌ Отримано порожній текст. Будь ласка, спробуйте ще раз.');
+      return;
+    }
+    
+    await ctx.reply('🔎 Аналізую ваші витрати...');
+    
+    const result = await analyzeExpense(text);
+    
+    if (result.error) {
+      await ctx.reply(`❌ ${result.error}. Будь ласка, спробуйте ще раз з більш чітким описом.`);
+      return;
+    }
+    
+    // Store result in our database
+    const now = new Date();
+    const analysisResult = {
+      resultId: resultCounter++,
+      date: now.toISOString(),
+      amount: result.amount,
+      category: result.category,
+      originalText: result.originalText,
+      userId: userId,
+      source: 'telegram'
+    };
+    
+    analysisResults.set(analysisResult.resultId.toString(), analysisResult);
+    
+    // Send confirmation to user
+    const confirmationMessage = `
+📊 *Результат аналізу:*
+📝 Текст: ${result.originalText}
+💰 Сума: ${result.amount !== null ? result.amount : 'Не визначено'}
+🏷️ Категорія: ${result.category}
+
+Дякую за використання бота! Ваші витрати успішно збережено.`;
+    
+    await ctx.reply(confirmationMessage, { parse_mode: 'Markdown' });
+    
+  } catch (error) {
+    console.error('Помилка при обробці витрат:', error);
+    await ctx.reply('❌ Виникла помилка при обробці даних. Будь ласка, спробуйте пізніше.');
+  }
+}
+
+/**
  * Process router data
  * @param {Object} data - Data to process
  * @returns {Object} Processing result
@@ -225,14 +346,21 @@ async function processRouterData(data) {
       // Process text messages
       return await processWebhookData({ text: data.content, userId: data.userId });
     } else if (data.type === 'AUDIO') {
-      // For audio messages, simply return a default response without transcription
-      // This ensures we acknowledge the audio but don't process it
-      return { 
-        error: 'Аудіо повідомлення не підтримуються', 
-        originalText: 'Audio message not supported',
-        amount: null,
-        category: 'інші'
-      };
+      // For audio messages, we'll download and transcribe the audio
+      const filePath = await downloadAudioFile(data.fileId);
+      const transcribedText = await transcribeAudio(filePath);
+      
+      // Process the transcribed text
+      const result = await processWebhookData({ 
+        text: transcribedText, 
+        userId: data.userId,
+        source: 'audio'
+      });
+      
+      // Clean up the temporary files
+      cleanupFiles([filePath]);
+      
+      return result;
     } else {
       throw new Error('Unknown data type');
     }
@@ -292,14 +420,15 @@ let botRunning = false;
 
 // Bot handlers
 bot.start((ctx) => {
-  ctx.reply('Привіт! Я бот для аналізу витрат. Просто надішли мені текст з описом твоїх витрат, і я проаналізую їх.');
+  ctx.reply('Привіт! Я бот для аналізу витрат. Ви можете надіслати мені текст або голосове повідомлення з описом ваших витрат, і я їх проаналізую.');
 });
 
 bot.help((ctx) => {
   ctx.reply(`
 Як користуватися ботом:
-1. Відправ мені текстове повідомлення з описом витрат, наприклад: "Купив хліб за 35 грн".
-2. Я проаналізую твої витрати і додам їх до твоєї таблиці.
+1. Відправте мені текстове повідомлення з описом витрат, наприклад: "Купив хліб за 35 грн".
+2. Або відправте голосове повідомлення з описом ваших витрат.
+3. Я проаналізую ваші витрати і додам їх до вашої таблиці.
 
 Підтримувані категорії витрат:
 - продукти
@@ -322,34 +451,39 @@ bot.on('text', async (ctx) => {
     
     if (text.startsWith('/')) return;
     
-    // Process text message
-    const data = {
-      type: 'TEXT',
-      content: text,
-      userId: ctx.message.from.id,
-      messageId: ctx.message.message_id,
-      timestamp: new Date().toISOString()
-    };
-    
-    // Process the data without waiting for completion
-    routeToRouter(data)
-      .then(() => {
-        ctx.reply('✅ Дані успішно оброблено');
-      })
-      .catch(error => {
-        console.error('Помилка обробки текстового повідомлення:', error);
-        ctx.reply('❌ Виникла помилка при обробці даних');
-      });
-    
+    await processExpense(text, ctx.message.from.id, ctx);
   } catch (error) {
-    console.error('Помилка при обробці повідомлення:', error);
+    console.error('Помилка при обробці текстового повідомлення:', error);
     ctx.reply('❌ Виникла помилка при обробці повідомлення');
   }
 });
 
 // Voice/audio handler
 bot.on(['voice', 'audio'], async (ctx) => {
-  ctx.reply('⚠️ Аудіо повідомлення наразі не підтримуються. Будь ласка, відправте опис витрат текстом.');
+  try {
+    await ctx.reply('🎤 Отримано голосове повідомлення. Обробляю...');
+    
+    const fileId = ctx.message.voice 
+      ? ctx.message.voice.file_id 
+      : ctx.message.audio.file_id;
+    
+    const filePath = await downloadAudioFile(fileId);
+    
+    await ctx.reply('🔊 Транскрибую аудіо...');
+    
+    const transcribedText = await transcribeAudio(filePath);
+    
+    await ctx.reply(`📝 Розпізнаний текст: "${transcribedText}"`);
+    
+    // Process the transcribed text as an expense
+    await processExpense(transcribedText, ctx.message.from.id, ctx);
+    
+    // Clean up temporary files
+    cleanupFiles([filePath]);
+  } catch (error) {
+    console.error('Помилка при обробці голосового повідомлення:', error);
+    ctx.reply('❌ Виникла помилка при обробці голосового повідомлення');
+  }
 });
 
 /**
