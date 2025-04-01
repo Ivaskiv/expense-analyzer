@@ -50,6 +50,20 @@ const EXPENSE_PROMPT = `Проаналізуй витрати: "INPUT_TEXT"
 
 const analysisResults = new Map();
 
+// Clean up old analysis results every hour
+setInterval(() => {
+  const oneHourAgo = Date.now() - (60 * 60 * 1000);
+  
+  for (const [key, value] of analysisResults.entries()) {
+    const resultTime = new Date(value.date).getTime();
+    if (resultTime < oneHourAgo) {
+      analysisResults.delete(key);
+    }
+  }
+  
+  console.log(`Cleaned up analysis results. Current count: ${analysisResults.size}`);
+}, 60 * 60 * 1000);
+
 async function analyzeExpense(text) {
   try {
     const prompt = EXPENSE_PROMPT.replace('INPUT_TEXT', text);
@@ -60,8 +74,13 @@ async function analyzeExpense(text) {
     const match = response.match(parseRegex);
     
     if (match && match.length >= 3) {
+      // Extract currency from original text if available
+      const currencyMatch = text.match(/грн|₴|\$|€|£/i);
+      const currency = currencyMatch ? currencyMatch[0] : 'грн';
+      
       return {
         amount: parseFloat(match[1]),
+        currency: currency,
         category: match[2].trim(),
         originalText: text
       };
@@ -94,8 +113,13 @@ async function fallbackCategoryDetection(text) {
     try {
       const parsedResponse = JSON.parse(response);
       if (parsedResponse.amount !== undefined && parsedResponse.category) {
+        // Extract currency from original text if available
+        const currencyMatch = text.match(/грн|₴|\$|€|£/i);
+        const currency = currencyMatch ? currencyMatch[0] : 'грн';
+        
         return {
           amount: parsedResponse.amount,
+          currency: currency,
           category: parsedResponse.category,
           originalText: text
         };
@@ -105,8 +129,13 @@ async function fallbackCategoryDetection(text) {
       const categoryMatch = response.match(/category["\s:]+["']?([а-яіїєґА-ЯІЇЄҐ\s]+)["']?/i);
       
       if (amountMatch && categoryMatch) {
+        // Extract currency from original text if available
+        const currencyMatch = text.match(/грн|₴|\$|€|£/i);
+        const currency = currencyMatch ? currencyMatch[0] : 'грн';
+        
         return {
           amount: parseFloat(amountMatch[1]),
+          currency: currency,
           category: categoryMatch[1].trim(),
           originalText: text
         };
@@ -114,8 +143,13 @@ async function fallbackCategoryDetection(text) {
     }
     
     const numberMatch = text.match(/\d+(?:\.\d+)?/);
+    // Extract currency from original text if available
+    const currencyMatch = text.match(/грн|₴|\$|€|£/i);
+    const currency = currencyMatch ? currencyMatch[0] : 'грн';
+    
     return {
       amount: numberMatch ? parseFloat(numberMatch[0]) : null,
+      currency: currency,
       category: 'інші',
       originalText: text
     };
@@ -220,8 +254,31 @@ function cleanupFiles(filePaths) {
 // Function to route the data to the router using internal routing for Render
 async function routeToRouter(data) {
   try {
-    // For Render, we're using internal routing rather than making HTTP requests
-    return await processRouterData(data);
+    // Process the data
+    const result = await processRouterData(data);
+    
+    // Store the result in the analysisResults map
+    const resultId = Date.now().toString();
+    result.userId = data.userId;
+    result.messageId = data.messageId;
+    result.id = resultId;
+    analysisResults.set(resultId, result);
+    
+    console.log('Analysis stored:', result);
+    
+    // Optionally send feedback to the user
+    if (data.userId) {
+      try {
+        await bot.telegram.sendMessage(
+          data.userId, 
+          `✅ Витрату збережено:\n💰 ${result.amount} ${result.currency || 'грн'} - ${result.category}`
+        );
+      } catch (msgError) {
+        console.error('Error sending confirmation message:', msgError);
+      }
+    }
+    
+    return result;
   } catch (error) {
     console.error('Error routing data to router:', error);
     throw error;
@@ -281,6 +338,7 @@ async function processWebhookData(data) {
     return {
       date: now.toISOString(),
       amount: result.amount,
+      currency: result.currency || 'грн',
       category: result.category,
       originalText: result.originalText,
       error: result.error
@@ -302,18 +360,50 @@ app.use(express.json({
   strict: false  
 }));
 
-// Minimal handlers - no responses needed
-bot.start((ctx) => {});
-bot.help((ctx) => {});
+// Welcome message for new users
+bot.start((ctx) => {
+  ctx.reply(`👋 Привіт, ${ctx.message.from.first_name}!
 
-// Optimized text handler - no response messages to user
+Я бот для обліку витрат. Просто надішліть мені:
+- текстове повідомлення (наприклад: "150 грн продукти")
+- голосове повідомлення з описом витрати
+
+Я автоматично розпізнаю суму та категорію і збережу вашу витрату.`);
+});
+
+// Help command with instructions
+bot.help((ctx) => {
+  ctx.reply(`ℹ️ Як користуватися ботом:
+
+1️⃣ Відправте текстове повідомлення з сумою та описом покупки:
+   Приклад: "500 грн канцтовари"
+
+2️⃣ Або відправте голосове повідомлення з описом витрати
+   Приклад: "Витратив 250 гривень на каву"
+
+Бот автоматично визначить суму та категорію витрат і збереже інформацію.
+
+Категорії:
+✅ продукти
+✅ кафе
+✅ покупки
+✅ ком послуги
+✅ спорт
+✅ канцтовари
+✅ транспорт
+✅ медицина
+✅ розваги
+✅ інші`);
+});
+
+// Optimized text handler
 bot.on('text', async (ctx) => {
   try {
     const text = ctx.message.text;
     
     if (text.startsWith('/')) return;
     
-    // Silent processing without reply
+    // Process and reply to the user
     const data = {
       type: 'TEXT',
       content: text,
@@ -326,19 +416,23 @@ bot.on('text', async (ctx) => {
     
   } catch (error) {
     console.error('Помилка при обробці повідомлення:', error);
+    ctx.reply('❌ Виникла помилка при обробці вашого повідомлення. Спробуйте знову.');
   }
 });
 
-// Optimized voice/audio handler - no response messages to user
+// Optimized voice/audio handler
 bot.on(['voice', 'audio'], async (ctx) => {
   try {
     const fileId = ctx.message.voice ? ctx.message.voice.file_id : ctx.message.audio.file_id;
+    
+    // Acknowledge receipt of audio
+    const processingMsg = await ctx.reply('🔄 Обробляю ваше аудіо...');
     
     // Download the audio file
     const oggPath = await downloadAudioFile(fileId);
     
     try {
-      // Silent processing without reply
+      // Process audio
       const data = {
         type: 'AUDIO',
         filePath: oggPath,
@@ -349,14 +443,78 @@ bot.on(['voice', 'audio'], async (ctx) => {
       
       await routeToRouter(data);
       
+      // Delete processing message
+      await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id).catch(() => {
+        // Ignore errors on deleting message
+      });
+      
     } catch (audioError) {
       console.error('Помилка при обробці аудіо:', audioError);
+      
+      // Update message to error
+      ctx.telegram.editMessageText(
+        ctx.chat.id,
+        processingMsg.message_id,
+        undefined,
+        '❌ Не вдалося розпізнати аудіо. Спробуйте відправити текстове повідомлення.'
+      ).catch(() => {
+        // Ignore errors on editing message
+      });
       
       // Cleanup on error
       if (oggPath) cleanupFiles([oggPath]);
     }
   } catch (error) {
     console.error('Помилка при обробці аудіо повідомлення:', error);
+    ctx.reply('❌ Виникла помилка при обробці вашого аудіо. Спробуйте знову або відправте текстове повідомлення.');
+  }
+});
+
+// Add a command to get expense summary
+bot.command('summary', async (ctx) => {
+  try {
+    const userId = ctx.message.from.id;
+    
+    // Get all expenses for this user
+    const userExpenses = Array.from(analysisResults.values())
+      .filter(result => result.userId === userId && !result.error);
+    
+    if (userExpenses.length === 0) {
+      return ctx.reply('У вас ще немає збережених витрат.');
+    }
+    
+    // Group by category
+    const byCategory = {};
+    let totalAmount = 0;
+    
+    userExpenses.forEach(expense => {
+      const category = expense.category;
+      const amount = expense.amount || 0;
+      
+      if (!byCategory[category]) {
+        byCategory[category] = 0;
+      }
+      
+      byCategory[category] += amount;
+      totalAmount += amount;
+    });
+    
+    // Create summary message
+    let message = '📊 Підсумок ваших витрат:\n\n';
+    
+    Object.entries(byCategory)
+      .sort((a, b) => b[1] - a[1]) // Sort by amount descending
+      .forEach(([category, amount]) => {
+        const percentage = ((amount / totalAmount) * 100).toFixed(1);
+        message += `${category}: ${amount} грн (${percentage}%)\n`;
+      });
+    
+    message += `\n💰 Разом: ${totalAmount} грн`;
+    
+    ctx.reply(message);
+  } catch (error) {
+    console.error('Помилка при створенні звіту:', error);
+    ctx.reply('❌ Не вдалося створити звіт. Спробуйте пізніше.');
   }
 });
 
