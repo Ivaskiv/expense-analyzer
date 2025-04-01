@@ -11,26 +11,37 @@ import { dirname } from 'path';
 
 dotenv.config();
 
+// Basic setup and initialization
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// For Render deployment, use the provided environment variable for the port
 const PORT = process.env.PORT || 3000;
-
-// Get the base URL for the service from environment variable
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
-
-// Create temp directory for files
 const TEMP_DIR = path.join(__dirname, 'temp');
+
+// Create temp directory if it doesn't exist
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
 
-const app = express();
+// Setup database - using Map for in-memory storage
+// In production, consider using a real database
+const analysisResults = new Map();
+let resultCounter = 1;
 
+// Initialize express app
+const app = express();
+app.use(express.json({
+  verify: (req, res, buf, encoding) => {
+    req.rawBody = buf.toString(encoding || 'utf8');
+  },
+  strict: false
+}));
+
+// Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
+// Prompt for expense analysis
 const EXPENSE_PROMPT = `Проаналізуй витрати: "INPUT_TEXT"
 Визнач суму (тільки число без валюти) та категорію витрат.
 Категорії витрат:
@@ -48,8 +59,11 @@ const EXPENSE_PROMPT = `Проаналізуй витрати: "INPUT_TEXT"
 Формат відповіді: сума, категорія
 Приклад: "500, канцтовари"`;
 
-const analysisResults = new Map();
-
+/**
+ * Analyze expense text using Gemini AI
+ * @param {string} text - Text to analyze
+ * @returns {Object} Analysis result
+ */
 async function analyzeExpense(text) {
   try {
     const prompt = EXPENSE_PROMPT.replace('INPUT_TEXT', text);
@@ -70,10 +84,20 @@ async function analyzeExpense(text) {
     return await fallbackCategoryDetection(text);
   } catch (error) {
     console.error('Помилка аналізу витрат:', error);
-    return { error: 'Помилка при аналізі витрат', originalText: text };
+    return { 
+      error: 'Помилка при аналізі витрат', 
+      originalText: text,
+      amount: null,
+      category: 'інші'
+    };
   }
 }
 
+/**
+ * Fallback method for expense analysis when primary method fails
+ * @param {string} text - Text to analyze
+ * @returns {Object} Analysis result
+ */
 async function fallbackCategoryDetection(text) {
   try {
     const enhancedPrompt = `Текст про витрати: "${text}"
@@ -101,6 +125,7 @@ async function fallbackCategoryDetection(text) {
         };
       }
     } catch (jsonError) {
+      // Try regex parsing if JSON parsing fails
       const amountMatch = response.match(/amount["\s:]+(\d+(?:\.\d+)?)/i);
       const categoryMatch = response.match(/category["\s:]+["']?([а-яіїєґА-ЯІЇЄҐ\s]+)["']?/i);
       
@@ -113,6 +138,7 @@ async function fallbackCategoryDetection(text) {
       }
     }
     
+    // Last resort - extract any number from text and use "інші" category
     const numberMatch = text.match(/\d+(?:\.\d+)?/);
     return {
       amount: numberMatch ? parseFloat(numberMatch[0]) : null,
@@ -121,10 +147,20 @@ async function fallbackCategoryDetection(text) {
     };
   } catch (error) {
     console.error('Помилка резервного аналізу витрат:', error);
-    return { error: 'Помилка при аналізі витрат', originalText: text };
+    return { 
+      error: 'Помилка при аналізі витрат', 
+      originalText: text,
+      amount: null,
+      category: 'інші'
+    };
   }
 }
 
+/**
+ * Download audio file from Telegram
+ * @param {string} fileId - Telegram file ID
+ * @returns {string} Path to downloaded file
+ */
 async function downloadAudioFile(fileId) {
   try {
     const fileInfo = await bot.telegram.getFile(fileId);
@@ -152,14 +188,36 @@ async function downloadAudioFile(fileId) {
   }
 }
 
-// Changed to use Whisper for transcription
+/**
+ * Convert OGG audio to WAV format using ffmpeg
+ * @param {string} oggPath - Path to OGG file
+ * @returns {string} Path to WAV file
+ */
+function convertOggToWav(oggPath) {
+  return new Promise((resolve, reject) => {
+    const wavPath = oggPath.replace('.ogg', '.wav');
+    
+    exec(`ffmpeg -i ${oggPath} -ar 16000 -ac 1 -c:a pcm_s16le ${wavPath}`, (error) => {
+      if (error) {
+        console.error('Помилка конвертації аудіо:', error);
+        return reject(error);
+      }
+      resolve(wavPath);
+    });
+  });
+}
+
+/**
+ * Transcribe audio using Whisper
+ * @param {string} audioPath - Path to audio file
+ * @returns {string} Transcribed text
+ */
 async function transcribeAudioWithWhisper(audioPath) {
   try {
-    // Using child_process to call Whisper CLI
+    const outputPath = audioPath.replace('.wav', '.txt');
+    
     return new Promise((resolve, reject) => {
-      const outputPath = audioPath.replace('.wav', '.txt');
-      
-      // For Render: Make sure Whisper is installed and available in the PATH
+      // Using small model for faster processing and Ukrainian language
       exec(`whisper ${audioPath} --model small --language uk --output_format txt --output_dir ${TEMP_DIR}`, (error) => {
         if (error) {
           console.error('Whisper transcription error:', error);
@@ -167,8 +225,21 @@ async function transcribeAudioWithWhisper(audioPath) {
         }
         
         try {
-          const transcribedText = fs.readFileSync(outputPath, 'utf8');
-          resolve(transcribedText.trim());
+          if (fs.existsSync(outputPath)) {
+            const transcribedText = fs.readFileSync(outputPath, 'utf8');
+            resolve(transcribedText.trim());
+          } else {
+            // Check for alternative output path based on Whisper naming conventions
+            const baseName = path.basename(audioPath, path.extname(audioPath));
+            const alternativeOutputPath = path.join(TEMP_DIR, `${baseName}.txt`);
+            
+            if (fs.existsSync(alternativeOutputPath)) {
+              const transcribedText = fs.readFileSync(alternativeOutputPath, 'utf8');
+              resolve(transcribedText.trim());
+            } else {
+              reject(new Error('Transcription output file not found'));
+            }
+          }
         } catch (readError) {
           reject(readError);
         }
@@ -180,62 +251,43 @@ async function transcribeAudioWithWhisper(audioPath) {
   }
 }
 
-function convertOggToWav(oggPath) {
-  return new Promise((resolve, reject) => {
-    const wavPath = oggPath.replace('.ogg', '.wav');
+/**
+ * Clean up temporary files
+ * @param {Array<string>} filePaths - Paths to files to delete
+ */
+function cleanupFiles(filePaths) {
+  filePaths.forEach(filePath => {
+    if (!filePath) return;
     
-    // For Render: Make sure ffmpeg is installed
-    exec(`ffmpeg -i ${oggPath} -ar 16000 -ac 1 -c:a pcm_s16le ${wavPath}`, (error) => {
-      if (error) {
-        console.error('Помилка конвертації аудіо:', error);
-        return reject(error);
+    // Clean up related files with different extensions
+    const basePath = filePath.substring(0, filePath.lastIndexOf('.'));
+    const extensions = ['.ogg', '.wav', '.txt', '.json'];
+    
+    extensions.forEach(ext => {
+      const fileToDelete = `${basePath}${ext}`;
+      if (fs.existsSync(fileToDelete)) {
+        try {
+          fs.unlinkSync(fileToDelete);
+        } catch (err) {
+          console.error(`Помилка при видаленні файлу ${fileToDelete}:`, err);
+        }
       }
-      resolve(wavPath);
     });
   });
 }
 
-function cleanupFiles(filePaths) {
-  filePaths.forEach(filePath => {
-    if (fs.existsSync(filePath)) {
-      try {
-        fs.unlinkSync(filePath);
-      } catch (err) {
-        console.error(`Помилка при видаленні файлу ${filePath}:`, err);
-      }
-    }
-    
-    // Check for additional related files
-    const textFilePath = filePath.replace('.wav', '.txt');
-    if (fs.existsSync(textFilePath)) {
-      try {
-        fs.unlinkSync(textFilePath);
-      } catch (err) {
-        console.error(`Помилка при видаленні файлу ${textFilePath}:`, err);
-      }
-    }
-  });
-}
-
-// Function to route the data to the router using internal routing for Render
-async function routeToRouter(data) {
-  try {
-    // For Render, we're using internal routing rather than making HTTP requests
-    return await processRouterData(data);
-  } catch (error) {
-    console.error('Error routing data to router:', error);
-    throw error;
-  }
-}
-
-// Function to process router data directly
+/**
+ * Process router data
+ * @param {Object} data - Data to process
+ * @returns {Object} Processing result
+ */
 async function processRouterData(data) {
   try {
     console.log('Router received data:', data);
     
     if (data.type === 'TEXT') {
       // Process text messages
-      return await processWebhookData({ text: data.content });
+      return await processWebhookData({ text: data.content, userId: data.userId });
     } else if (data.type === 'AUDIO') {
       // Process audio messages
       try {
@@ -244,17 +296,28 @@ async function processRouterData(data) {
         // Use Whisper for transcription
         const transcribedText = await transcribeAudioWithWhisper(wavPath);
         
+        console.log('Transcribed text:', transcribedText);
+        
         // Process the transcribed text
-        const result = await processWebhookData({ text: transcribedText });
+        const result = await processWebhookData({ 
+          text: transcribedText, 
+          userId: data.userId,
+          source: 'audio' 
+        });
         
         // Cleanup files
-        cleanupFiles([data.filePath, wavPath]);
+        cleanupFiles([data.filePath]);
         
         return result;
       } catch (audioError) {
         console.error('Error processing audio:', audioError);
         cleanupFiles([data.filePath]);
-        return { error: 'Помилка при обробці аудіо', originalText: 'Audio processing failed' };
+        return { 
+          error: 'Помилка при обробці аудіо', 
+          originalText: 'Audio processing failed',
+          amount: null,
+          category: 'інші'
+        };
       }
     } else {
       throw new Error('Unknown data type');
@@ -265,7 +328,11 @@ async function processRouterData(data) {
   }
 }
 
-// Function to process webhook data
+/**
+ * Process webhook data
+ * @param {Object} data - Data to process
+ * @returns {Object} Processing result
+ */
 async function processWebhookData(data) {
   try {
     if (!data || !data.text) {
@@ -278,42 +345,71 @@ async function processWebhookData(data) {
     const result = await analyzeExpense(expenseText);
     
     const now = new Date();
-    return {
+    const analysisResult = {
+      resultId: resultCounter++,
       date: now.toISOString(),
       amount: result.amount,
       category: result.category,
       originalText: result.originalText,
-      error: result.error
+      error: result.error,
+      userId: data.userId || 'unknown',
+      source: data.source || 'text'
     };
+    
+    // Store the result in our in-memory database
+    analysisResults.set(analysisResult.resultId.toString(), analysisResult);
+    
+    // If analysisResults gets too large, remove old entries
+    if (analysisResults.size > 1000) {
+      const oldestKey = analysisResults.keys().next().value;
+      analysisResults.delete(oldestKey);
+    }
+    
+    return analysisResult;
   } catch (error) {
     console.error('Помилка обробки даних:', error);
     throw error;
   }
 }
 
+// Initialize Telegram bot
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 let botRunning = false;
 
-// Setup Express middleware before bot handlers
-app.use(express.json({
-  verify: (req, res, buf, encoding) => {
-    req.rawBody = buf.toString(encoding || 'utf8');
-  },
-  strict: false  
-}));
+// Bot handlers
+bot.start((ctx) => {
+  ctx.reply('Привіт! Я бот для аналізу витрат. Просто надішли мені текст або аудіо з описом твоїх витрат, і я проаналізую їх.');
+});
 
-// Minimal handlers - no responses needed
-bot.start((ctx) => {});
-bot.help((ctx) => {});
+bot.help((ctx) => {
+  ctx.reply(`
+Як користуватися ботом:
+1. Відправ мені текстове повідомлення з описом витрат, наприклад: "Купив хліб за 35 грн".
+2. Або запиши голосове повідомлення з описом витрат.
+3. Я проаналізую твої витрати і додам їх до твоєї таблиці.
 
-// Optimized text handler - no response messages to user
+Підтримувані категорії витрат:
+- продукти
+- кафе
+- покупки
+- ком послуги
+- спорт
+- канцтовари
+- транспорт
+- медицина
+- розваги
+- інші
+  `);
+});
+
+// Text handler
 bot.on('text', async (ctx) => {
   try {
     const text = ctx.message.text;
     
     if (text.startsWith('/')) return;
     
-    // Silent processing without reply
+    // Process text message
     const data = {
       type: 'TEXT',
       content: text,
@@ -322,23 +418,34 @@ bot.on('text', async (ctx) => {
       timestamp: new Date().toISOString()
     };
     
-    await routeToRouter(data);
+    // Process the data without waiting for completion
+    routeToRouter(data)
+      .then(() => {
+        ctx.reply('✅ Дані успішно оброблено');
+      })
+      .catch(error => {
+        console.error('Помилка обробки текстового повідомлення:', error);
+        ctx.reply('❌ Виникла помилка при обробці даних');
+      });
     
   } catch (error) {
     console.error('Помилка при обробці повідомлення:', error);
+    ctx.reply('❌ Виникла помилка при обробці повідомлення');
   }
 });
 
-// Optimized voice/audio handler - no response messages to user
+// Voice/audio handler
 bot.on(['voice', 'audio'], async (ctx) => {
   try {
+    ctx.reply('🎤 Отримано аудіо, обробляю...');
+    
     const fileId = ctx.message.voice ? ctx.message.voice.file_id : ctx.message.audio.file_id;
     
     // Download the audio file
     const oggPath = await downloadAudioFile(fileId);
     
     try {
-      // Silent processing without reply
+      // Process audio message
       const data = {
         type: 'AUDIO',
         filePath: oggPath,
@@ -347,20 +454,45 @@ bot.on(['voice', 'audio'], async (ctx) => {
         timestamp: new Date().toISOString()
       };
       
-      await routeToRouter(data);
+      // Process the data without waiting for completion
+      routeToRouter(data)
+        .then(() => {
+          ctx.reply('✅ Аудіо успішно оброблено');
+        })
+        .catch(error => {
+          console.error('Помилка обробки аудіо повідомлення:', error);
+          ctx.reply('❌ Виникла помилка при обробці аудіо');
+        });
       
     } catch (audioError) {
       console.error('Помилка при обробці аудіо:', audioError);
+      ctx.reply('❌ Виникла помилка при обробці аудіо');
       
       // Cleanup on error
       if (oggPath) cleanupFiles([oggPath]);
     }
   } catch (error) {
     console.error('Помилка при обробці аудіо повідомлення:', error);
+    ctx.reply('❌ Виникла помилка при обробці аудіо повідомлення');
   }
 });
 
-// Router endpoint for API compatibility
+/**
+ * Route data to router
+ * @param {Object} data - Data to route
+ * @returns {Promise<Object>} Router result
+ */
+async function routeToRouter(data) {
+  try {
+    // For Render, we're using internal routing
+    return await processRouterData(data);
+  } catch (error) {
+    console.error('Error routing data to router:', error);
+    throw error;
+  }
+}
+
+// API endpoints
 app.post('/router', async (req, res) => {
   try {
     const result = await processRouterData(req.body);
@@ -371,7 +503,6 @@ app.post('/router', async (req, res) => {
   }
 });
 
-// Webhook endpoint for HTTP requests
 app.post('/webhook', async (req, res) => {
   try {
     const result = await processWebhookData(req.body);
@@ -382,7 +513,6 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// API endpoints
 app.get('/api/analysis/:resultId', (req, res) => {
   const { resultId } = req.params;
   
@@ -402,12 +532,11 @@ app.get('/api/analysis/user/:userId', (req, res) => {
   res.json(userResults);
 });
 
-// Root endpoint
+// Root and health check endpoints
 app.get('/', (req, res) => {
-  res.send('Бот працює!');
+  res.send('Бот працює! Все ок!');
 });
 
-// Health check endpoint for Render
 app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
@@ -468,7 +597,7 @@ const server = app.listen(PORT, () => {
   }
 });
 
-// Handle graceful shutdown for Render
+// Handle graceful shutdown
 process.once('SIGINT', () => {
   server.close(() => {
     console.log('Сервер зупинено (SIGINT)');
@@ -494,4 +623,3 @@ process.once('SIGTERM', () => {
     }
   });
 });
-
