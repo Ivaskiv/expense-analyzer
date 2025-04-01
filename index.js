@@ -209,35 +209,45 @@ function convertOggToWav(oggPath) {
 
 /**
  * Transcribe audio using Whisper
- * @param {string} audioPath - Path to audio file
- * @returns {string} Transcribed text
+ * @param {string} audioPath - Шлях до аудіо файлу
+ * @returns {string} Транскрибований текст
  */
 async function transcribeAudioWithWhisper(audioPath) {
   try {
     const outputPath = audioPath.replace('.wav', '.txt');
+    const modelPath = path.join(__dirname, 'models', 'whisper-medium-uk');
     
     return new Promise((resolve, reject) => {
-      // Using small model for faster processing and Ukrainian language
-      exec(`whisper ${audioPath} --model small --language uk --output_format txt --output_dir ${TEMP_DIR}`, (error) => {
+      // Використовуємо medium модель для кращої якості з україномовними фразами
+      // Додаємо спеціальні параметри для української мови
+      exec(`whisper ${audioPath} --model medium --language uk --initial_prompt "Це аудіозапис українською про фінансові витрати" --output_format txt --output_dir ${TEMP_DIR} --task transcribe --beam_size 5 --best_of 5`, (error) => {
         if (error) {
-          console.error('Whisper transcription error:', error);
+          console.error('Помилка транскрипції Whisper:', error);
           return reject(error);
         }
         
         try {
           if (fs.existsSync(outputPath)) {
-            const transcribedText = fs.readFileSync(outputPath, 'utf8');
-            resolve(transcribedText.trim());
+            let transcribedText = fs.readFileSync(outputPath, 'utf8').trim();
+            
+            // Постобробка для покращення розпізнавання сум і фінансової термінології
+            transcribedText = improveFinancialTextRecognition(transcribedText);
+            
+            resolve(transcribedText);
           } else {
-            // Check for alternative output path based on Whisper naming conventions
+            // Перевіряємо альтернативний шлях виводу на основі конвенцій іменування Whisper
             const baseName = path.basename(audioPath, path.extname(audioPath));
             const alternativeOutputPath = path.join(TEMP_DIR, `${baseName}.txt`);
             
             if (fs.existsSync(alternativeOutputPath)) {
-              const transcribedText = fs.readFileSync(alternativeOutputPath, 'utf8');
-              resolve(transcribedText.trim());
+              let transcribedText = fs.readFileSync(alternativeOutputPath, 'utf8').trim();
+              
+              // Постобробка для покращення розпізнавання сум і фінансової термінології
+              transcribedText = improveFinancialTextRecognition(transcribedText);
+              
+              resolve(transcribedText);
             } else {
-              reject(new Error('Transcription output file not found'));
+              reject(new Error('Файл транскрипції не знайдено'));
             }
           }
         } catch (readError) {
@@ -252,6 +262,32 @@ async function transcribeAudioWithWhisper(audioPath) {
 }
 
 /**
+ * Покращення розпізнавання фінансових термінів у транскрибованому тексті
+ * @param {string} text - Транскрибований текст
+ * @returns {string} Покращений текст
+ */
+function improveFinancialTextRecognition(text) {
+  // Виправлення типових помилок розпізнавання чисел
+  let improved = text
+    // Нормалізація чисел зі словами
+    .replace(/(\d+)\s*(грн|гривень|грн\.|гривні)/gi, '$1 грн')
+    .replace(/(\d+)\s*(грн|гривень|грн\.|гривні)(\s*\d+)/gi, '$1.$3 грн')
+    // Виправлення для категорій витрат
+    .replace(/продукт(и|ів|ам)/gi, 'продукти')
+    .replace(/комунальн(і|их|им)/gi, 'ком послуги')
+    .replace(/в магазин(і|у|ах)/gi, 'продукти')
+    // Виправлення для сум з комою та крапкою
+    .replace(/(\d+)[,\.](\d+)/g, (match, p1, p2) => `${p1}.${p2}`);
+  
+  // Пошук і нормалізація сум грошей
+  const moneyPattern = /(\d+)\s*(?:гривень|грн|грн\.|гривні|грошей|гр\.)/gi;
+  improved = improved.replace(moneyPattern, (match, amount) => `${amount} грн`);
+  
+  // Видалення зайвих пробілів
+  improved = improved.replace(/\s+/g, ' ').trim();
+  
+  return improved;
+}/**
  * Clean up temporary files
  * @param {Array<string>} filePaths - Paths to files to delete
  */
