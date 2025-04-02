@@ -20,7 +20,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 
-# Install Coqui STT
+# Install Coqui STT (optional if you're using Deepgram)
 RUN pip3 install --no-cache-dir coqui-stt
 
 # Create directory for models and temp files
@@ -31,11 +31,6 @@ COPY . .
 
 # Create .env file from example if it doesn't exist
 RUN if [ ! -f .env ]; then cp .env.example .env || echo "No .env.example found"; fi
-
-# Download Ukrainian model (uncomment and customize URL if needed)
-# RUN wget -O models/ukrainian.tar.gz https://example.com/ukrainian-model.tar.gz \
-#     && tar -xzf models/ukrainian.tar.gz -C models/ukrainian \
-#     && rm models/ukrainian.tar.gz
 
 # Expose the port the app runs on
 EXPOSE 3000
