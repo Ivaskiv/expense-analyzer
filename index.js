@@ -181,14 +181,17 @@ const addExpenseToSheet = async (date, amount, category, note) => {
     const sheet = doc.sheetsByIndex[0]; 
     
     // Форматування дати
-    const formattedDate = new Date(date).toLocaleDateString('uk-UA', {
+    const formattedDateTime = new Date(date).toLocaleString('uk-UA', {
       year: 'numeric',
       month: '2-digit',
-      day: '2-digit'
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
     });
-    
+
     await sheet.addRow({
-      'Дата': formattedDate,
+      'Дата': formattedDateTime,
       'Сума': amount,
       'Категорія': category,
       'Запис': note
