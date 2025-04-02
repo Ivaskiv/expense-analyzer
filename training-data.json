@@ -1,0 +1,830 @@
+
+[ {
+    "text": "Купив хліб за 50 гривень",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 6,
+        "end": 10,
+        "value": "хліб"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 14,
+        "end": 24,
+        "value": "50 гривень"
+      },
+      {
+        "entity": "expense_category",
+        "start": 6,
+        "end": 10,
+        "value": "продукти"
+      }
+    ]
+  },
+  {
+    "text": "Купив продукти на 450 гривень",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_category",
+        "start": 6,
+        "end": 14,
+        "value": "продукти"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 18,
+        "end": 29,
+        "value": "450 гривень"
+      }
+    ]
+  },
+  {
+    "text": "Витратив 300 грн на овочі та фрукти",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "wit/amount_of_money",
+        "start": 9,
+        "end": 16,
+        "value": "300 грн"
+      },
+      {
+        "entity": "expense_category",
+        "start": 20,
+        "end": 35,
+        "value": "продукти"
+      },
+      {
+        "entity": "expense_item",
+        "start": 20,
+        "end": 35,
+        "value": "овочі та фрукти"
+      }
+    ]
+  },
+  {
+    "text": "Молоко і сир коштували 120 гривень",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 11,
+        "value": "Молоко і сир"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 22,
+        "end": 33,
+        "value": "120 гривень"
+      },
+      {
+        "entity": "expense_category",
+        "start": 0,
+        "end": 11,
+        "value": "продукти"
+      }
+    ]
+  },
+  {
+    "text": "180 грн за хліб та молоко в супермаркеті",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "wit/amount_of_money",
+        "start": 0,
+        "end": 6,
+        "value": "180 грн"
+      },
+      {
+        "entity": "expense_item",
+        "start": 11,
+        "end": 26,
+        "value": "хліб та молоко"
+      },
+      {
+        "entity": "expense_category",
+        "start": 11,
+        "end": 26,
+        "value": "продукти"
+      }
+    ]
+  },
+  
+  {
+    "text": "Обід в кафе коштував 350",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_category",
+        "start": 8,
+        "end": 12,
+        "value": "кафе"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 22,
+        "end": 25,
+        "value": "350"
+      },
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 4,
+        "value": "Обід"
+      }
+    ]
+  },
+  {
+    "text": "Вечеря з друзями в ресторані 780 грн",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 18,
+        "value": "Вечеря з друзями"
+      },
+      {
+        "entity": "expense_category",
+        "start": 22,
+        "end": 30,
+        "value": "кафе"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 31,
+        "end": 38,
+        "value": "780 грн"
+      }
+    ]
+  },
+  {
+    "text": "Сніданок в кафетерії 120 гривень",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 8,
+        "value": "Сніданок"
+      },
+      {
+        "entity": "expense_category",
+        "start": 12,
+        "end": 21,
+        "value": "кафе"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 22,
+        "end": 33,
+        "value": "120 гривень"
+      }
+    ]
+  },
+  {
+    "text": "Піца з колою 250",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 12,
+        "value": "Піца з колою"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 13,
+        "end": 16,
+        "value": "250"
+      },
+      {
+        "entity": "expense_category",
+        "start": 0,
+        "end": 4,
+        "value": "кафе"
+      }
+    ]
+  },
+  
+  {
+    "text": "Заплатив за комуналку 1200 грн",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_category",
+        "start": 13,
+        "end": 22,
+        "value": "комунальні послуги"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 23,
+        "end": 31,
+        "value": "1200 грн"
+      }
+    ]
+  },
+  {
+    "text": "Оплата за світло 600",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 10,
+        "end": 16,
+        "value": "світло"
+      },
+      {
+        "entity": "expense_category",
+        "start": 10,
+        "end": 16,
+        "value": "комунальні послуги"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 17,
+        "end": 20,
+        "value": "600"
+      }
+    ]
+  },
+  {
+    "text": "Газ і вода за місяць 950 гривень",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 9,
+        "value": "Газ і вода"
+      },
+      {
+        "entity": "expense_category",
+        "start": 0,
+        "end": 9,
+        "value": "комунальні послуги"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 20,
+        "end": 31,
+        "value": "950 гривень"
+      }
+    ]
+  },
+  {
+    "text": "2100 гривень за опалення",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "wit/amount_of_money",
+        "start": 0,
+        "end": 11,
+        "value": "2100 гривень"
+      },
+      {
+        "entity": "expense_item",
+        "start": 15,
+        "end": 23,
+        "value": "опалення"
+      },
+      {
+        "entity": "expense_category",
+        "start": 15,
+        "end": 23,
+        "value": "комунальні послуги"
+      }
+    ]
+  },
+  {
+    "text": "Інтернет та телебачення 400",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 23,
+        "value": "Інтернет та телебачення"
+      },
+      {
+        "entity": "expense_category",
+        "start": 0,
+        "end": 8,
+        "value": "комунальні послуги"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 24,
+        "end": 27,
+        "value": "400"
+      }
+    ]
+  },
+  
+  {
+    "text": "Абонемент в спортзал на місяць 800",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 9,
+        "value": "Абонемент"
+      },
+      {
+        "entity": "expense_category",
+        "start": 13,
+        "end": 21,
+        "value": "спорт"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 32,
+        "end": 35,
+        "value": "800"
+      }
+    ]
+  },
+  {
+    "text": "Тренування з тренером 350 грн",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 21,
+        "value": "Тренування з тренером"
+      },
+      {
+        "entity": "expense_category",
+        "start": 0,
+        "end": 10,
+        "value": "спорт"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 22,
+        "end": 29,
+        "value": "350 грн"
+      }
+    ]
+  },
+  {
+    "text": "Купив гантелі за 1200",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 6,
+        "end": 13,
+        "value": "гантелі"
+      },
+      {
+        "entity": "expense_category",
+        "start": 6,
+        "end": 13,
+        "value": "спорт"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 17,
+        "end": 21,
+        "value": "1200"
+      }
+    ]
+  },
+  
+  {
+    "text": "Купив канцтовари дітям до школи 400 грн",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 6,
+        "end": 16,
+        "value": "канцтовари"
+      },
+      {
+        "entity": "expense_category",
+        "start": 6,
+        "end": 16,
+        "value": "канцтовари"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 34,
+        "end": 41,
+        "value": "400 грн"
+      }
+    ]
+  },
+  {
+    "text": "Зошити і ручки 120",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 14,
+        "value": "Зошити і ручки"
+      },
+      {
+        "entity": "expense_category",
+        "start": 0,
+        "end": 14,
+        "value": "канцтовари"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 15,
+        "end": 18,
+        "value": "120"
+      }
+    ]
+  },
+  {
+    "text": "95 гривень за папір для принтера",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "wit/amount_of_money",
+        "start": 0,
+        "end": 10,
+        "value": "95 гривень"
+      },
+      {
+        "entity": "expense_item",
+        "start": 14,
+        "end": 33,
+        "value": "папір для принтера"
+      },
+      {
+        "entity": "expense_category",
+        "start": 14,
+        "end": 19,
+        "value": "канцтовари"
+      }
+    ]
+  },
+  
+  {
+    "text": "Купив нові кросівки за 2500 гривень",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 6,
+        "end": 19,
+        "value": "нові кросівки"
+      },
+      {
+        "entity": "expense_category",
+        "start": 6,
+        "end": 19,
+        "value": "покупки"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 23,
+        "end": 35,
+        "value": "2500 гривень"
+      }
+    ]
+  },
+  {
+    "text": "Сорочка 800 грн",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 7,
+        "value": "Сорочка"
+      },
+      {
+        "entity": "expense_category",
+        "start": 0,
+        "end": 7,
+        "value": "покупки"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 8,
+        "end": 15,
+        "value": "800 грн"
+      }
+    ]
+  },
+  {
+    "text": "Футболка та джинси у торговому центрі 1500",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 17,
+        "value": "Футболка та джинси"
+      },
+      {
+        "entity": "expense_category",
+        "start": 0,
+        "end": 17,
+        "value": "покупки"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 36,
+        "end": 40,
+        "value": "1500"
+      }
+    ]
+  },
+  {
+    "text": "Придбав куртку за 3000",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 8,
+        "end": 14,
+        "value": "куртку"
+      },
+      {
+        "entity": "expense_category",
+        "start": 8,
+        "end": 14,
+        "value": "покупки"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 18,
+        "end": 22,
+        "value": "3000"
+      }
+    ]
+  },
+  
+  {
+    "text": "Заплатив за таксі 200 гривень",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 13,
+        "end": 18,
+        "value": "таксі"
+      },
+      {
+        "entity": "expense_category",
+        "start": 13,
+        "end": 18,
+        "value": "транспорт"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 19,
+        "end": 30,
+        "value": "200 гривень"
+      }
+    ]
+  },
+  {
+    "text": "Квиток на автобус 25 гривень",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 17,
+        "value": "Квиток на автобус"
+      },
+      {
+        "entity": "expense_category",
+        "start": 11,
+        "end": 17,
+        "value": "транспорт"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 18,
+        "end": 28,
+        "value": "25 гривень"
+      }
+    ]
+  },
+  {
+    "text": "Заправив бензин 1000 грн",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 9,
+        "end": 15,
+        "value": "бензин"
+      },
+      {
+        "entity": "expense_category",
+        "start": 9,
+        "end": 15,
+        "value": "транспорт"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 16,
+        "end": 24,
+        "value": "1000 грн"
+      }
+    ]
+  },
+  {
+    "text": "Проїзний на метро 500",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 16,
+        "value": "Проїзний на метро"
+      },
+      {
+        "entity": "expense_category",
+        "start": 12,
+        "end": 16,
+        "value": "транспорт"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 17,
+        "end": 20,
+        "value": "500"
+      }
+    ]
+  },
+  
+  {
+    "text": "Ліки в аптеці 300 грн",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 4,
+        "value": "Ліки"
+      },
+      {
+        "entity": "expense_category",
+        "start": 0,
+        "end": 4,
+        "value": "здоров'я"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 14,
+        "end": 21,
+        "value": "300 грн"
+      }
+    ]
+  },
+  {
+    "text": "Візит до стоматолога 1500 гривень",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 20,
+        "value": "Візит до стоматолога"
+      },
+      {
+        "entity": "expense_category",
+        "start": 9,
+        "end": 20,
+        "value": "здоров'я"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 21,
+        "end": 34,
+        "value": "1500 гривень"
+      }
+    ]
+  },
+  {
+    "text": "Аналізи в лабораторії 450",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "expense_item",
+        "start": 0,
+        "end": 22,
+        "value": "Аналізи в лабораторії"
+      },
+      {
+        "entity": "expense_category",
+        "start": 0,
+        "end": 7,
+        "value": "здоров'я"
+      },
+      {
+        "entity": "wit/amount_of_money",
+        "start": 23,
+        "end": 26,
+        "value": "450"
+      }
+    ]
+  },
+  
+  {
+    "text": "Заплатив 100.50 грн за каву",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "wit/amount_of_money",
+        "start": 9,
+        "end": 19,
+        "value": "100.50 грн"
+      },
+      {
+        "entity": "expense_item",
+        "start": 23,
+        "end": 27,
+        "value": "каву"
+      },
+      {
+        "entity": "expense_category",
+        "start": 23,
+        "end": 27,
+        "value": "кафе"
+      }
+    ]
+  },
+  {
+    "text": "Витратив 1,250 гривень на подарунок",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "wit/amount_of_money",
+        "start": 9,
+        "end": 22,
+        "value": "1,250 гривень"
+      },
+      {
+        "entity": "expense_item",
+        "start": 26,
+        "end": 35,
+        "value": "подарунок"
+      },
+      {
+        "entity": "expense_category",
+        "start": 26,
+        "end": 35,
+        "value": "покупки"
+      }
+    ]
+  },
+  {
+    "text": "99₴ за зарядку для телефону",
+    "intent": "record_expense",
+    "entities": [
+      {
+        "entity": "wit/amount_of_money",
+        "start": 0,
+        "end": 3,
+        "value": "99₴"
+      },
+      {
+        "entity": "expense_item",
+        "start": 7,
+        "end": 27,
+        "value": "зарядку для телефону"
+      },
+      {
+        "entity": "expense_category",
+        "start": 7,
+        "end": 27,
+        "value": "покупки"
+      }
+    ]
+  },
+  
+  {
+    "text": "Скасуй останню витрату",
+    "intent": "cancel_expense",
+    "entities": []
+  },
+  {
+    "text": "Видали цей запис",
+    "intent": "cancel_expense",
+    "entities": []
+  },
+  {
+    "text": "Скасувати",
+    "intent": "cancel_expense",
+    "entities": []
+  }
+]

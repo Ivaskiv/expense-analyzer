@@ -1,67 +1,92 @@
+// index.js
 import dotenv from 'dotenv';
 import { Telegraf, Markup } from 'telegraf';
 import express from 'express';
 import fs from 'fs';
+import fetch from 'node-fetch';
 import path from 'path';
 import axios from 'axios';
-import { spawn } from 'child_process';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { fileURLToPath } from 'url';
 import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
 
-// ES modules equivalent for dirname
+const WIT_TOKEN = process.env.WIT_AI_TOKEN;
+const trainingData = JSON.parse(fs.readFileSync('training-data.json', 'utf8'));
+//Wit.ai training feature
+async function trainWit() {
+  for (const data of trainingData) {
+    await fetch(`https://api.wit.ai/entities`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${WIT_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(data)
+    });
+  }
+}
+trainWit().then(() => {
+  console.log('Навчання завершено');
+}).catch(err => {
+  console.error('Помилка при навчанні:', err);
+});
+//
+
 const filename = fileURLToPath(import.meta.url);
 const dirname = path.dirname(filename);
 
-// Завантаження змінних середовища
 dotenv.config();
 
-// Ініціалізація Google Generative AI
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL_NAME || 'gemini-pro' });
-
-// Константи
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000 || 3001;
 const TEMP_DIR = path.join(dirname, 'temp');
-const COQUI_MODEL_PATH = process.env.COQUI_MODEL_PATH || path.join(dirname, 'models/ukrainian');
 
-// Створення тимчасової директорії, якщо вона не існує
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
 
-// Ініціалізація Express
 const app = express();
-app.use(express.json({
-  verify: (req, res, buf, encoding) => {
-    req.rawBody = buf.toString(encoding || 'utf8');
-  },
-  strict: false
-}));
+app.use(express.json());
 
-// Ініціалізація Telegram бота
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 /**
- * Аналіз тексту для виділення суми та категорії витрат
- * @param {string} text - Текст для аналізу
- * @returns {Promise<Object>} - Результат аналізу (сума та категорія)
+ * @param {string} text -
+ * @returns {Object} 
  */
-const analyzeExpense = async (text) => {
-  const EXPENSE_PROMPT = `Проаналізуй ці витрати: "${text}" і визнач суму та категорію.
-Сума - це число без валюти.
-Категорії: продукти, кафе, покупки, комунальні послуги, спорт, канцтовари, інші.
-Якщо текст містить слова про зошити, ручки, олівці, папір - це категорія "канцтовари".
-Поверни лише два значення через кому: суму (тільки число) та категорію. Наприклад: "500, канцтовари"`;
-
+const analyzeExpense = (text) => {
   try {
-    const result = await model.generateContent(EXPENSE_PROMPT);
-    const response = result.response.text().trim();
-    const match = response.match(/(\d+(?:\.\d+)?)\s*,\s*([а-яіїєґА-ЯІЇЄҐ\s]+)/);
-    return match 
-      ? { amount: parseFloat(match[1]), category: match[2].trim() } 
-      : { error: 'Не вдалося визначити категорію витрат', rawResponse: response };
+    const amountRegex = /(\d+(?:[.,]\d+)?)\s*(грн|гривень|грн\.|₴|uah|)/gi;
+    const amountMatch = amountRegex.exec(text);
+    
+    let amount = 0;
+    if (amountMatch) {
+      amount = parseFloat(amountMatch[1].replace(',', '.'));
+    } else {
+      const numberMatch = /(\d+(?:[.,]\d+)?)/.exec(text);
+      if (numberMatch) {
+        amount = parseFloat(numberMatch[1].replace(',', '.'));
+      }
+    }
+    
+    let category = 'інші';
+    
+    const lowerText = text.toLowerCase();
+    
+    if (/прод[ау]кт|їж[аі]|хліб|молоко|овоч|фрукт/i.test(lowerText)) {
+      category = 'продукти';
+    } else if (/каф[еє]|ресторан|їдальн|обід|вечер[яю]|снідан[ок]/i.test(lowerText)) {
+      category = 'кафе';
+    } else if (/комунал|світло|газ|вод[аи]|опален|електро/i.test(lowerText)) {
+      category = 'комунальні послуги';
+    } else if (/спорт|трену|фітнес|абонемент|зал/i.test(lowerText)) {
+      category = 'спорт';
+    } else if (/зошит|ручк|олівц|папір|канц|книг/i.test(lowerText)) {
+      category = 'канцтовари';
+    } else if (/одяг|взутт|сороч|магазин|купив|купил|придба/i.test(lowerText)) {
+      category = 'покупки';
+    }
+    
+    return { amount, category };
   } catch (err) {
     console.error('Помилка аналізу витрат:', err);
     return { error: 'Помилка при аналізі витрат' };
@@ -69,21 +94,18 @@ const analyzeExpense = async (text) => {
 };
 
 /**
- * Налаштування Google Sheets
- * @returns {Promise<GoogleSpreadsheet>} - Об'єкт документа Google Sheets
+ * @returns {Promise<GoogleSpreadsheet>} 
  */
 const setupGoogleSheets = async () => {
   try {
-    // Створення JWT клієнта для аутентифікації
     const serviceAccountAuth = new JWT({
       email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
       key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
 
-    // Створення нового екземпляра документа
     const doc = new GoogleSpreadsheet(process.env.GOOGLE_SHEET_ID, serviceAccountAuth);
-    await doc.loadInfo(); // Завантаження властивостей документа
+    await doc.loadInfo(); 
     console.log('📊 Google Sheets підключено:', doc.title);
     return doc;
   } catch (err) {
@@ -93,26 +115,21 @@ const setupGoogleSheets = async () => {
 };
 
 /**
- * Додавання витрати до Google Sheets
- * @param {string} date - Дата витрати
- * @param {number} amount - Сума витрати
- * @param {string} category - Категорія витрати
- * @param {string} note - Примітка до витрати
- * @param {boolean} confirmed - Чи підтверджена витрата
- * @returns {Promise<boolean>} - Результат додавання
+ * @param {string} date 
+ * @param {number} amount 
+ * @param {string} category 
+ * @param {string} note 
+ * @returns {Promise<boolean>} 
  */
-const addExpenseToSheet = async (date, amount, category, note, confirmed = false) => {
+const addExpenseToSheet = async (date, amount, category, note) => {
   try {
     const doc = await setupGoogleSheets();
-    const sheet = doc.sheetsByIndex[0]; // Отримання першого листа
-    
-    // Додавання нового рядка з даними про витрату
+    const sheet = doc.sheetsByIndex[0]; 
     await sheet.addRow({
       'Дата': date,
       'Сума': amount,
       'Категорія': category,
-      'Запис': note,
-      'Підтверджено': confirmed ? 'Так' : 'Ні'
+      'Запис': note
     });
     
     return true;
@@ -123,29 +140,25 @@ const addExpenseToSheet = async (date, amount, category, note, confirmed = false
 };
 
 /**
- * Надсилання повідомлення з підтвердженням витрати
- * @param {TelegrafContext} ctx - Контекст Telegraf
- * @param {number} amount - Сума витрати
- * @param {string} category - Категорія витрати
- * @param {string} note - Примітка до витрати
+ * @param {TelegrafContext} ctx 
+ * @param {number} amount 
+ * @param {string} category 
+ * @param {string} note 
  */
 const sendExpenseConfirmation = async (ctx, amount, category, note) => {
-  const currentDate = new Date().toISOString();
-  
-  // Кодування нотатки в base64 для передачі в callback даних
   const encodedNote = Buffer.from(note).toString('base64');
   
   await ctx.reply(
-    `📝 *Підтвердіть витрату:*\n\n` +
-    `💰 *Сума:* ${amount} грн\n` +
-    `🏷️ *Категорія:* ${category}\n` +
-    `📌 *Запис:* ${note}`,
+    `📊 *Результат аналізу:*\n` +
+    `📝 Текст: ${note}\n` +
+    `💰 Сума: ${amount}\n` +
+    `🗂️ Категорія: ${category}`,
     {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
         [
           Markup.button.callback('✅ Підтвердити', 
-            `confirm_${currentDate}_${amount}_${category}_${encodedNote}`
+            `confirm_${amount}_${category}_${encodedNote}`
           ),
           Markup.button.callback('❌ Скасувати', 'cancel')
         ],
@@ -158,8 +171,85 @@ const sendExpenseConfirmation = async (ctx, amount, category, note) => {
 };
 
 /**
- * Обробник для голосових повідомлень та аудіо
+ * @param {string} filePath 
+ * @returns {Promise<string>} 
  */
+const transcribeAudio = async (filePath) => {
+  try {
+    if (!process.env.WIT_AI_TOKEN) {
+      console.log('⚠️ WIT_AI_TOKEN не налаштовано, повертаємо тестовий текст');
+      return "800 гривень сорочка";
+    }
+
+    const formData = new FormData();
+    formData.append('file', fs.createReadStream(filePath), {
+      filename: path.basename(filePath),
+      contentType: 'audio/ogg'
+    });
+
+    const response = await axios.post(
+      'https://api.wit.ai/speech?v=20230215',
+      formData,
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.WIT_AI_TOKEN}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      }
+    );
+
+    if (response.data && response.data.text) {
+      return response.data.text;
+    } else {
+      throw new Error('Не вдалося отримати текст з Wit.ai');
+    }
+  } catch (err) {
+    console.error('Помилка при транскрибації аудіо:', err);
+    return "Не вдалося розпізнати аудіо. Спробуйте надіслати текстом.";
+  }
+};
+
+/**
+ * @param {string} fileId 
+ * @returns {Promise<string>} 
+ */
+const downloadAudioFile = async (fileId) => {
+  try {
+    const fileInfo = await bot.telegram.getFile(fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${fileInfo.file_path}`;
+    const fileName = `${Date.now()}.ogg`;
+    const filePath = path.join(TEMP_DIR, fileName);
+    
+    const response = await axios.get(fileUrl, { responseType: 'stream' });
+    const writer = fs.createWriteStream(filePath);
+    response.data.pipe(writer);
+    
+    return new Promise((resolve, reject) => {
+      writer.on('finish', () => resolve(filePath));
+      writer.on('error', reject);
+    });
+  } catch (err) {
+    console.error('Помилка завантаження аудіо:', err);
+    throw err;
+  }
+};
+
+/**
+ * @param {Array<string>} filePaths 
+ */
+const cleanupFiles = (filePaths) => {
+  filePaths.forEach(filePath => {
+    if (fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+        console.log(`Видалено файл: ${filePath}`);
+      } catch (err) {
+        console.error(`Помилка видалення файлу ${filePath}:`, err);
+      }
+    }
+  });
+};
+
 bot.on(['voice', 'audio'], async (ctx) => {
   try {
     await ctx.reply('🎙️ Обробляю ваше аудіо...');
@@ -173,12 +263,11 @@ bot.on(['voice', 'audio'], async (ctx) => {
     await ctx.reply(`📝 Розпізнаний текст: "${transcribedText}"`);
     
     await ctx.reply('💰 Аналізую витрати...');
-    const analysisResult = await analyzeExpense(transcribedText);
+    const analysisResult = analyzeExpense(transcribedText);
     
     if (analysisResult.error) {
       await ctx.reply(`❌ ${analysisResult.error}`);
     } else {
-      // Використовуємо систему підтвердження
       await sendExpenseConfirmation(
         ctx, 
         analysisResult.amount, 
@@ -187,7 +276,6 @@ bot.on(['voice', 'audio'], async (ctx) => {
       );
     }
     
-    // Видалення тимчасових файлів
     cleanupFiles([filePath]);
   } catch (err) {
     console.error('Помилка при обробці голосового повідомлення:', err);
@@ -195,20 +283,16 @@ bot.on(['voice', 'audio'], async (ctx) => {
   }
 });
 
-/**
- * Обробник для текстових повідомлень
- */
 bot.on('text', async (ctx) => {
-  if (ctx.message.text.startsWith('/')) return; // Пропускаємо команди
+  if (ctx.message.text.startsWith('/')) return; 
   
   try {
     await ctx.reply('💰 Аналізую витрати...');
-    const analysisResult = await analyzeExpense(ctx.message.text);
+    const analysisResult = analyzeExpense(ctx.message.text);
     
     if (analysisResult.error) {
       await ctx.reply(`❌ ${analysisResult.error}`);
     } else {
-      // Створюємо клавіатуру підтвердження
       await sendExpenseConfirmation(
         ctx, 
         analysisResult.amount, 
@@ -222,26 +306,22 @@ bot.on('text', async (ctx) => {
   }
 });
 
-/**
- * Обробник для кнопки підтвердження
- */
-bot.action(/confirm_(.+)_(.+)_(.+)_(.+)/, async (ctx) => {
+bot.action(/confirm_(.+)_(.+)_(.+)/, async (ctx) => {
   try {
-    const date = ctx.match[1];
-    const amount = parseFloat(ctx.match[2]);
-    const category = ctx.match[3];
-    const note = Buffer.from(ctx.match[4], 'base64').toString();
+    const amount = parseFloat(ctx.match[1]);
+    const category = ctx.match[2];
+    const note = Buffer.from(ctx.match[3], 'base64').toString();
     
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     await ctx.reply('⏳ Зберігаю дані...');
     
-    const formattedDate = date.replace(/T/, 'T').replace(/\..+/, '');
-    const success = await addExpenseToSheet(formattedDate, amount, category, note, true);
+    const currentDate = new Date().toISOString();
+    const success = await addExpenseToSheet(currentDate, amount, category, note);
     
     if (success) {
-      await ctx.reply('✅ Витрату успішно збережено в Google таблиці!');
+      await ctx.reply('✅ Дякую за використання бота! Ваші витрати успішно збережено.');
     } else {
-      await ctx.reply('❌ Не вдалося зберегти витрату. Спробуйте знову пізніше.');
+      await ctx.reply('❌ Помилка при збереженні витрат');
     }
   } catch (err) {
     console.error('Помилка при підтвердженні витрати:', err);
@@ -249,17 +329,11 @@ bot.action(/confirm_(.+)_(.+)_(.+)_(.+)/, async (ctx) => {
   }
 });
 
-/**
- * Обробник для кнопки скасування
- */
 bot.action('cancel', async (ctx) => {
   await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
   await ctx.reply('❌ Витрату скасовано');
 });
 
-/**
- * Обробник для кнопки зміни категорії
- */
 bot.action(/change_category_(.+)_(.+)/, async (ctx) => {
   try {
     const amount = parseFloat(ctx.match[1]);
@@ -286,9 +360,6 @@ bot.action(/change_category_(.+)_(.+)/, async (ctx) => {
   }
 });
 
-/**
- * Обробник для вибору категорії
- */
 bot.action(/set_category_(.+)_(.+)_(.+)/, async (ctx) => {
   try {
     const amount = parseFloat(ctx.match[1]);
@@ -297,7 +368,6 @@ bot.action(/set_category_(.+)_(.+)_(.+)/, async (ctx) => {
     
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     
-    // Надсилаємо нове підтвердження з оновленою категорією
     await sendExpenseConfirmation(ctx, amount, category, note);
   } catch (err) {
     console.error('Помилка при виборі категорії:', err);
@@ -305,113 +375,6 @@ bot.action(/set_category_(.+)_(.+)_(.+)/, async (ctx) => {
   }
 });
 
-/**
- * Завантаження аудіофайлу з Telegram
- * @param {string} fileId - ID файлу в Telegram
- * @returns {Promise<string>} - Шлях до завантаженого файлу
- */
-const downloadAudioFile = async (fileId) => {
-  try {
-    const fileInfo = await bot.telegram.getFile(fileId);
-    const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${fileInfo.file_path}`;
-    const fileName = `${Date.now()}.ogg`;
-    const filePath = path.join(TEMP_DIR, fileName);
-    
-    const response = await axios.get(fileUrl, { responseType: 'stream' });
-    const writer = fs.createWriteStream(filePath);
-    response.data.pipe(writer);
-    
-    return new Promise((resolve, reject) => {
-      writer.on('finish', () => resolve(filePath));
-      writer.on('error', reject);
-    });
-  } catch (err) {
-    console.error('Помилка завантаження аудіо:', err);
-    throw err;
-  }
-};
-
-/**
- * Транскрибація аудіо за допомогою Coqui STT
- * @param {string} filePath - Шлях до аудіофайлу
- * @returns {Promise<string>} - Розпізнаний текст
- */
-const transcribeAudio = async (filePath) => {
-  try {
-    const wavFilePath = `${filePath}.wav`;
-    
-    // Конвертація аудіо в WAV формат за допомогою ffmpeg
-    await new Promise((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', [
-        '-i', filePath, 
-        '-ar', '16000',  // Частота дискретизації 16kHz
-        '-ac', '1',      // Моно канал
-        '-f', 'wav',     // WAV формат
-        wavFilePath
-      ]);
-      
-      ffmpeg.stderr.on('data', (data) => {
-        console.log(`ffmpeg stderr: ${data}`);
-      });
-      
-      ffmpeg.on('close', code => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`ffmpeg process exited with code ${code}`));
-        }
-      });
-    });
-    
-    // Транскрибація за допомогою Coqui STT
-    return new Promise((resolve, reject) => {
-      const coqui = spawn('stt', ['--model', COQUI_MODEL_PATH, '--audio', wavFilePath]);
-      let transcribedText = '';
-      
-      coqui.stdout.on('data', data => {
-        transcribedText += data.toString();
-      });
-      
-      coqui.stderr.on('data', (data) => {
-        console.log(`coqui stderr: ${data}`);
-      });
-      
-      coqui.on('close', code => {
-        if (code === 0) {
-          resolve(transcribedText.trim());
-        } else {
-          reject(new Error(`Coqui STT failed with code ${code}`));
-        }
-      });
-    });
-  } catch (err) {
-    console.error('Помилка при транскрибації аудіо:', err);
-    throw err;
-  }
-};
-
-/**
- * Видалення тимчасових файлів
- * @param {Array<string>} filePaths - Масив шляхів до файлів
- */
-const cleanupFiles = (filePaths) => {
-  filePaths.forEach(filePath => {
-    const basePath = filePath.substring(0, filePath.lastIndexOf('.'));
-    ['.ogg', '.wav', '.txt'].forEach(ext => {
-      const fileToDelete = `${basePath}${ext}`;
-      if (fs.existsSync(fileToDelete)) {
-        try {
-          fs.unlinkSync(fileToDelete);
-          console.log(`Видалено файл: ${fileToDelete}`);
-        } catch (err) {
-          console.error(`Помилка видалення файлу ${fileToDelete}:`, err);
-        }
-      }
-    });
-  });
-};
-
-// Обробник для команди /start
 bot.command('start', async (ctx) => {
   await ctx.reply(
     'Привіт! Я бот для аналізу витрат. 💰\n\n' +
@@ -420,7 +383,6 @@ bot.command('start', async (ctx) => {
   );
 });
 
-// Обробник для команди /help
 bot.command('help', async (ctx) => {
   await ctx.reply(
     '🤖 *Як користуватися ботом:*\n\n' +
@@ -441,7 +403,6 @@ bot.command('help', async (ctx) => {
   );
 });
 
-// Ендпоінт для перевірки стану сервера
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -450,18 +411,15 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Запуск бота
 bot.launch().then(() => {
   console.log('🤖 Telegram бот успішно запущено');
 }).catch(err => {
   console.error('Помилка запуску бота:', err);
 });
 
-// Запуск Express сервера
 app.listen(PORT, () => {
   console.log(`🚀 Сервер працює на порту ${PORT}`);
 });
 
-// Обробка сигналів завершення роботи
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
