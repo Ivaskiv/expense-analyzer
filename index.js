@@ -1,4 +1,3 @@
-// index.js
 import dotenv from 'dotenv';
 import { Telegraf, Markup } from 'telegraf';
 import express from 'express';
@@ -10,10 +9,34 @@ import { fileURLToPath } from 'url';
 import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
 
+const filename = fileURLToPath(import.meta.url);
+const dirname = path.dirname(filename);
+
+dotenv.config();
+
+const PORT = process.env.PORT || 3000 || 3001;
+const TEMP_DIR = path.join(dirname, 'temp');
 const WIT_TOKEN = process.env.WIT_AI_TOKEN;
+
+if (!fs.existsSync(TEMP_DIR)) {
+  fs.mkdirSync(TEMP_DIR, { recursive: true });
+}
+
+const app = express();
+app.use(express.json());
+
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+
+const noteStorage = {};
+
 const trainingData = JSON.parse(fs.readFileSync('training-data.json', 'utf8'));
-//Wit.ai training feature
+
 async function trainWit() {
+  if (!WIT_TOKEN) {
+    console.log('⚠️ WIT_AI_TOKEN не налаштовано, пропускаємо навчання');
+    return;
+  }
+  
   for (const data of trainingData) {
     await fetch(`https://api.wit.ai/entities`, {
       method: 'POST',
@@ -25,34 +48,13 @@ async function trainWit() {
     });
   }
 }
+
 trainWit().then(() => {
   console.log('Навчання завершено');
 }).catch(err => {
   console.error('Помилка при навчанні:', err);
 });
-//
 
-const filename = fileURLToPath(import.meta.url);
-const dirname = path.dirname(filename);
-
-dotenv.config();
-
-const PORT = process.env.PORT || 3000 || 3001;
-const TEMP_DIR = path.join(dirname, 'temp');
-
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
-}
-
-const app = express();
-app.use(express.json());
-
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-
-/**
- * @param {string} text -
- * @returns {Object} 
- */
 const analyzeExpense = (text) => {
   try {
     const amountRegex = /(\d+(?:[.,]\d+)?)\s*(грн|гривень|грн\.|₴|uah|)/gi;
@@ -93,9 +95,6 @@ const analyzeExpense = (text) => {
   }
 };
 
-/**
- * @returns {Promise<GoogleSpreadsheet>} 
- */
 const setupGoogleSheets = async () => {
   try {
     const serviceAccountAuth = new JWT({
@@ -114,13 +113,6 @@ const setupGoogleSheets = async () => {
   }
 };
 
-/**
- * @param {string} date 
- * @param {number} amount 
- * @param {string} category 
- * @param {string} note 
- * @returns {Promise<boolean>} 
- */
 const addExpenseToSheet = async (date, amount, category, note) => {
   try {
     const doc = await setupGoogleSheets();
@@ -139,14 +131,9 @@ const addExpenseToSheet = async (date, amount, category, note) => {
   }
 };
 
-/**
- * @param {TelegrafContext} ctx 
- * @param {number} amount 
- * @param {string} category 
- * @param {string} note 
- */
 const sendExpenseConfirmation = async (ctx, amount, category, note) => {
-  const encodedNote = Buffer.from(note).toString('base64');
+  const noteId = Date.now().toString();
+  noteStorage[noteId] = note;
   
   await ctx.reply(
     `📊 *Результат аналізу:*\n` +
@@ -158,22 +145,18 @@ const sendExpenseConfirmation = async (ctx, amount, category, note) => {
       ...Markup.inlineKeyboard([
         [
           Markup.button.callback('✅ Підтвердити', 
-            `confirm_${amount}_${category}_${encodedNote}`
+            `confirm_${amount}_${category}_${noteId}`
           ),
           Markup.button.callback('❌ Скасувати', 'cancel')
         ],
         [
-          Markup.button.callback('🔄 Змінити категорію', `change_category_${amount}_${encodedNote}`)
+          Markup.button.callback('🔄 Змінити категорію', `change_category_${amount}_${noteId}`)
         ]
       ])
     }
   );
 };
 
-/**
- * @param {string} filePath 
- * @returns {Promise<string>} 
- */
 const transcribeAudio = async (filePath) => {
   try {
     if (!process.env.WIT_AI_TOKEN) {
@@ -209,10 +192,6 @@ const transcribeAudio = async (filePath) => {
   }
 };
 
-/**
- * @param {string} fileId 
- * @returns {Promise<string>} 
- */
 const downloadAudioFile = async (fileId) => {
   try {
     const fileInfo = await bot.telegram.getFile(fileId);
@@ -234,9 +213,6 @@ const downloadAudioFile = async (fileId) => {
   }
 };
 
-/**
- * @param {Array<string>} filePaths 
- */
 const cleanupFiles = (filePaths) => {
   filePaths.forEach(filePath => {
     if (fs.existsSync(filePath)) {
@@ -310,7 +286,13 @@ bot.action(/confirm_(.+)_(.+)_(.+)/, async (ctx) => {
   try {
     const amount = parseFloat(ctx.match[1]);
     const category = ctx.match[2];
-    const note = Buffer.from(ctx.match[3], 'base64').toString();
+    const noteId = ctx.match[3];
+    const note = noteStorage[noteId];
+    
+    if (!note) {
+      await ctx.reply('❌ Не вдалося знайти дані про витрату. Спробуйте знову.');
+      return;
+    }
     
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     await ctx.reply('⏳ Зберігаю дані...');
@@ -320,6 +302,7 @@ bot.action(/confirm_(.+)_(.+)_(.+)/, async (ctx) => {
     
     if (success) {
       await ctx.reply('✅ Дякую за використання бота! Ваші витрати успішно збережено.');
+      delete noteStorage[noteId];
     } else {
       await ctx.reply('❌ Помилка при збереженні витрат');
     }
@@ -337,17 +320,23 @@ bot.action('cancel', async (ctx) => {
 bot.action(/change_category_(.+)_(.+)/, async (ctx) => {
   try {
     const amount = parseFloat(ctx.match[1]);
-    const note = Buffer.from(ctx.match[2], 'base64').toString();
+    const noteId = ctx.match[2];
+    const note = noteStorage[noteId];
+    
+    if (!note) {
+      await ctx.reply('❌ Не вдалося знайти дані про витрату. Спробуйте знову.');
+      return;
+    }
     
     const categories = ['продукти', 'кафе', 'покупки', 'комунальні послуги', 'спорт', 'канцтовари', 'інші'];
     
     const buttons = [];
     for (let i = 0; i < categories.length; i += 2) {
       const row = [];
-      row.push(Markup.button.callback(categories[i], `set_category_${amount}_${categories[i]}_${ctx.match[2]}`));
+      row.push(Markup.button.callback(categories[i], `set_category_${amount}_${categories[i]}_${noteId}`));
       
       if (i + 1 < categories.length) {
-        row.push(Markup.button.callback(categories[i+1], `set_category_${amount}_${categories[i+1]}_${ctx.match[2]}`));
+        row.push(Markup.button.callback(categories[i+1], `set_category_${amount}_${categories[i+1]}_${noteId}`));
       }
       
       buttons.push(row);
@@ -364,7 +353,13 @@ bot.action(/set_category_(.+)_(.+)_(.+)/, async (ctx) => {
   try {
     const amount = parseFloat(ctx.match[1]);
     const category = ctx.match[2];
-    const note = Buffer.from(ctx.match[3], 'base64').toString();
+    const noteId = ctx.match[3];
+    const note = noteStorage[noteId];
+    
+    if (!note) {
+      await ctx.reply('❌ Не вдалося знайти дані про витрату. Спробуйте знову.');
+      return;
+    }
     
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     
@@ -411,11 +406,32 @@ app.get('/health', (req, res) => {
   });
 });
 
-bot.launch().then(() => {
-  console.log('🤖 Telegram бот успішно запущено');
-}).catch(err => {
-  console.error('Помилка запуску бота:', err);
+app.post('/webhook', (req, res) => {
+  bot.handleUpdate(req.body, res);
 });
+
+const startBot = async () => {
+  try {
+    await bot.telegram.deleteWebhook();
+    
+    if (process.env.USE_WEBHOOK && process.env.WEBHOOK_DOMAIN) {
+      await bot.launch({
+        webhook: {
+          domain: process.env.WEBHOOK_DOMAIN,
+          path: '/webhook'
+        }
+      });
+      console.log('🤖 Telegram бот успішно запущено в режимі webhook');
+    } else {
+      await bot.launch();
+      console.log('🤖 Telegram бот успішно запущено в режимі polling');
+    }
+  } catch (err) {
+    console.error('Помилка запуску бота:', err);
+  }
+};
+
+startBot();
 
 app.listen(PORT, () => {
   console.log(`🚀 Сервер працює на порту ${PORT}`);
