@@ -2,13 +2,14 @@ import dotenv from 'dotenv';
 import { Telegraf, Markup } from 'telegraf';
 import express from 'express';
 import fs from 'fs';
-import fetch from 'node-fetch';
 import path from 'path';
 import axios from 'axios';
 import { fileURLToPath } from 'url';
 import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
-import FormData from 'form-data';
+import OpenAI from 'openai';
+import { exec } from 'child_process';
+import ffmpeg from 'fluent-ffmpeg';
 
 // Встановлення шляхів
 const filename = fileURLToPath(import.meta.url);
@@ -20,14 +21,16 @@ dotenv.config();
 // Константи
 const PORT = process.env.PORT || 3000;
 const TEMP_DIR = path.join(dirname, 'temp');
-const WIT_TOKEN = process.env.WIT_AI_TOKEN;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const DEFAULT_CATEGORIES = ['продукти', 'кафе', 'покупки', 'комунальні послуги', 'спорт', 'канцтовари', 'інші'];
+const DEFAULT_CATEGORIES = ['продукти', 'кафе', 'покупки', 'комунальні послуги', 'спорт', 'канцтовари', 'транспорт', 'розваги', 'здоров\'я', 'інші'];
 
 // Перевірка, чи існує тимчасова директорія
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
+
+// Ініціалізація OpenAI
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Ініціалізація Express App
 const app = express();
@@ -39,50 +42,14 @@ if (!TELEGRAM_BOT_TOKEN) {
   process.exit(1);
 }
 
+if (!process.env.OPENAI_API_KEY) {
+  console.error('❌ OPENAI_API_KEY не встановлено!');
+  process.exit(1);
+}
+
 // Ініціалізація Telegram бота
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 const noteStorage = {};
-
-// Завантаження навчальних даних, якщо файл існує
-let trainingData = [];
-try {
-  if (fs.existsSync('training-data.json')) {
-    trainingData = JSON.parse(fs.readFileSync('training-data.json', 'utf8'));
-  }
-} catch (err) {
-  console.error('⚠️ Помилка при завантаженні навчальних даних:', err);
-}
-
-/**
- * Навчає WIT.AI з даними
- */
-async function trainWit() {
-  if (!WIT_TOKEN) {
-    console.log('⚠️ WIT_AI_TOKEN не налаштовано, пропускаємо навчання');
-    return;
-  }
-  
-  if (trainingData.length === 0) {
-    console.log('⚠️ Немає даних для навчання WIT.AI');
-    return;
-  }
-  
-  try {
-    for (const data of trainingData) {
-      await fetch(`https://api.wit.ai/entities`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${WIT_TOKEN}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(data)
-      });
-    }
-    console.log('✅ Навчання WIT.AI завершено');
-  } catch (err) {
-    console.error('❌ Помилка при навчанні WIT.AI:', err);
-  }
-}
 
 /**
  * Аналізує текст для виявлення витрат
@@ -239,42 +206,47 @@ const sendExpenseConfirmation = async (ctx, amount, category, note) => {
 };
 
 /**
- * Транскрибування аудіо через WIT.AI
+ * Транскрибування аудіо через Whisper API
  * @param {string} filePath - Шлях до аудіофайлу
  * @returns {Promise<string>} - Розпізнаний текст
  */
 const transcribeAudio = async (filePath) => {
   try {
-    if (!WIT_TOKEN) {
-      console.log('⚠️ WIT_AI_TOKEN не налаштовано');
-      return "Не вдалося розпізнати аудіо. Токен WIT.AI не налаштовано.";
-    }
+    console.log(`🎙️ Конвертую аудіо у WAV: ${filePath}`);
+    
+    // Створюємо шлях до нового файлу
+    const wavPath = filePath.replace(path.extname(filePath), '.wav');
 
-    const formData = new FormData();
-    formData.append('file', fs.createReadStream(filePath), {
-      filename: path.basename(filePath),
-      contentType: 'audio/ogg'
+    // Конвертуємо у WAV (16 kHz, 1 канал, PCM S16LE)
+    await new Promise((resolve, reject) => {
+      ffmpeg(filePath)
+        .output(wavPath)
+        .audioFrequency(16000)
+        .audioChannels(1)
+        .audioCodec('pcm_s16le')
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
     });
 
-    const response = await axios.post(
-      'https://api.wit.ai/speech?v=20230215',
-      formData,
-      {
-        headers: {
-          'Authorization': `Bearer ${WIT_TOKEN}`,
-          'Content-Type': 'multipart/form-data'
-        }
-      }
-    );
+    console.log(`📝 Відправляю аудіо на Whisper API`);
+    const fileStream = fs.createReadStream(wavPath);
+    
+    const response = await openai.audio.transcriptions.create({
+      file: fileStream,
+      model: "whisper-1",
+      language: "uk"
+    });
 
-    if (response.data && response.data.text) {
-      return response.data.text;
-    } else {
-      throw new Error('Не вдалося отримати текст з Wit.ai');
-    }
+    console.log(`✅ Розпізнаний текст: ${response.text}`);
+    
+    // Очищення тимчасового файлу WAV
+    cleanupFiles([wavPath]);
+    
+    return response.text || "Не вдалося розпізнати аудіо.";
   } catch (err) {
     console.error('❌ Помилка при транскрибації аудіо:', err);
-    return "Не вдалося розпізнати аудіо. Спробуйте надіслати текстом.";
+    return "Не вдалося розпізнати аудіо. Спробуйте ще раз.";
   }
 };
 
@@ -583,9 +555,6 @@ app.post('/webhook', (req, res) => {
 // Функція запуску бота
 const startBot = async () => {
   try {
-    // Запуск навчання Wit.AI
-    await trainWit();
-    
     // Видалення попереднього вебхуку
     await bot.telegram.deleteWebhook();
     
@@ -606,6 +575,19 @@ const startBot = async () => {
     console.error('❌ Помилка запуску бота:', err);
   }
 };
+bot.start(async (ctx) => {
+  await ctx.reply(
+    `👋 Привіт, ${ctx.message.from.first_name}!\n
+Я — твій помічник у відстеженні витрат. Надішли мені текст або голосове повідомлення з покупкою, а я проаналізую витрати та допоможу їх записати у Google Таблицю.  
+      
+📌 Як користуватись:  
+- Надішли **текст** або **голосове повідомлення** про покупку.  
+- Я розпізнаю суму та категорію витрати.  
+- Підтверди запис — і я збережу його в Google Sheets.  
+      
+🚀 Готовий розпочати? Надішли свою першу покупку!`
+  );
+});
 
 // Запуск бота та сервера
 startBot();
